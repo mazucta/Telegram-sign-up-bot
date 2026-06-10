@@ -1,0 +1,16 @@
+{
+  "name": "booking-hub",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Shared booking backend (Telegram bot + Google Calendar) for many masters' sites.",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.0",
+    "express": "^4.22.2",
+    "googleapis": "^173.0.0"
+  }
+}

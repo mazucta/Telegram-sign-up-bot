@@ -1,0 +1,33 @@
+# Render Blueprint — the shared Booking Hub (one Node web service, API + bot).
+# Masters' sites are separate static sites that call this hub's /api.
+services:
+  - type: web
+    name: booking-hub
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: '20'
+
+      # --- Shared bot + service account (set in the Render dashboard) ---
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: GOOGLE_CLIENT_EMAIL
+        sync: false
+      - key: GOOGLE_PRIVATE_KEY
+        sync: false
+
+      # --- First master ("alyona") defaults — tenants.js reads these ---
+      - key: TELEGRAM_MASTER_CHAT_ID
+        sync: false
+      - key: TELEGRAM_ADMIN_IDS
+        sync: false
+      - key: GOOGLE_CALENDAR_ID
+        sync: false
+      - key: STUDIO_TIMEZONE
+        value: Europe/Berlin
