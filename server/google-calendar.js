@@ -20,7 +20,7 @@ const DEFAULT_TZ = process.env.STUDIO_TIMEZONE || 'Europe/Berlin'
 const DEFAULT_CAL = () => process.env.GOOGLE_CALENDAR_ID
 
 // Bookable hours (shared by bot, website and story). Every two hours, 2h each.
-export const TIME_SLOTS = ['09:00', '11:00', '13:00', '15:00', '17:00', '19:00']
+export const TIME_SLOTS = ['10:00', '12:00', '14:00', '16:00', '18:00']
 const SLOT_HOURS = 2
 
 // Service-account credentials are global (shared across tenants)
