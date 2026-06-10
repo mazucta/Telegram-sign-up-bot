@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Shared booking backend (Telegram bot + Google Calendar) for many masters' sites.",
   "scripts": {
+    "build": "echo \"no build step (API-only service)\"",
     "start": "node server/index.js",
     "dev": "node --watch server/index.js"
   },
