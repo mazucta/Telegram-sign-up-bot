@@ -29,6 +29,22 @@ export const TENANTS = [
     allowedOrigins: ['*'],
   },
 
+  {
+    id: 'uliana',
+    name: 'Uliana Lomaka',
+    telegramChatId: '-1003902963683', // group with Uliana + the bot
+    // Personal Telegram user ids allowed to press Confirm/Decline & use /menu.
+    // TODO: add Uliana's personal id (she sends /start to the bot in a PRIVATE
+    // chat — the bot replies with her id). Without it, buttons in the group do
+    // nothing.
+    adminIds: [],
+    // TODO: paste Uliana's Google Calendar ID (Calendar settings → Integrate
+    // calendar → Calendar ID). Empty = Telegram notifications only, no calendar.
+    calendarId: '',
+    timezone: 'Europe/Tallinn',
+    allowedOrigins: ['*'],
+  },
+
   // --- Add more masters here ---
   // {
   //   id: 'olena',
