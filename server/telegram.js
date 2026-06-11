@@ -18,6 +18,8 @@ import {
   unblockWholeDay,
   addDays,
   TIME_SLOTS,
+  WINDOW_DAYS,
+  localToday,
 } from './google-calendar.js'
 import { renderScheduleImage } from './story.js'
 import { tenantByChatId, isTenantAdmin } from './tenants.js'
@@ -230,7 +232,7 @@ async function onMessage(msg) {
         calendarId: ctx.calendarId,
         tz: ctx.tz,
       })
-      await sendPhotoBuffer(chatId, buf, '📅 Свободные окна на 2 недели')
+      await sendPhotoBuffer(chatId, buf, '📅 Свободные окна на месяц')
     }
     return
   }
@@ -299,7 +301,7 @@ const menuKeyboard = () => ({
   inline_keyboard: [
     [{ text: '🚫 Заблокировать / освободить время', callback_data: 'm|block' }],
     [{ text: '🌴 Выходные дни', callback_data: 'm|dayoff' }],
-    [{ text: '📋 Расписание (2 недели)', callback_data: 'm|list' }],
+    [{ text: '📋 Расписание (месяц)', callback_data: 'm|list' }],
     [{ text: '🖼 Картинка для сторис', callback_data: 'm|story' }],
   ],
 })
@@ -316,13 +318,13 @@ function dayLabel(dateStr) {
   return d.toLocaleDateString('ru-RU', { weekday: 'short', day: 'numeric', month: 'short' })
 }
 
-async function buildDaysKeyboard(mode, calendarId) {
-  const today = new Date().toISOString().slice(0, 10)
+async function buildDaysKeyboard(mode, calendarId, tz) {
+  const today = localToday(tz)
   let off = new Set()
-  if (mode === 'dayoff') off = new Set((await getAvailability(14, calendarId)).daysOff)
+  if (mode === 'dayoff') off = new Set((await getAvailability(WINDOW_DAYS, calendarId, tz)).daysOff)
   const rows = []
   let row = []
-  for (let i = 0; i < 14; i++) {
+  for (let i = 0; i < WINDOW_DAYS; i++) {
     const date = addDays(today, i)
     const prefix = mode === 'dayoff' && off.has(date) ? '🌴 ' : ''
     const cb = mode === 'dayoff' ? `do|${date}` : `bd|${date}`
@@ -358,9 +360,9 @@ function buildSlotsKeyboard(date, status) {
   return { inline_keyboard: rows }
 }
 
-async function scheduleSummary(calendarId) {
-  const av = await getAvailability(14, calendarId)
-  const lines = ['📋 <b>Расписание на 2 недели</b>', '']
+async function scheduleSummary(calendarId, tz) {
+  const av = await getAvailability(WINDOW_DAYS, calendarId, tz)
+  const lines = ['📋 <b>Расписание на месяц</b>', '']
   if (av.daysOff.length) lines.push('🌴 Выходные: ' + av.daysOff.sort().map(dayLabel).join(', '))
   const byDate = {}
   for (const s of av.busy) {
@@ -389,14 +391,14 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
       await editMessageText(chatId, messageId, menuText(), { reply_markup: menuKeyboard() })
     } else if (sub === 'block') {
       await editMessageText(chatId, messageId, '🚫 <b>Блокировка времени</b>\nВыбери день:', {
-        reply_markup: await buildDaysKeyboard('block', cid),
+        reply_markup: await buildDaysKeyboard('block', cid, ctx.tz),
       })
     } else if (sub === 'dayoff') {
       await editMessageText(chatId, messageId, '🌴 <b>Выходные</b>\nНажми на день, чтобы переключить:', {
-        reply_markup: await buildDaysKeyboard('dayoff', cid),
+        reply_markup: await buildDaysKeyboard('dayoff', cid, ctx.tz),
       })
     } else if (sub === 'list') {
-      await editMessageText(chatId, messageId, await scheduleSummary(cid), {
+      await editMessageText(chatId, messageId, await scheduleSummary(cid, ctx.tz), {
         reply_markup: {
           inline_keyboard: [
             [{ text: '🖼 Картинка для сторис', callback_data: 'm|story' }],
@@ -442,7 +444,7 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
     }
     await answerCallback(callbackId, 'Генерирую…')
     const buf = await renderScheduleImage({ lang, calendarId: cid, tz: ctx.tz })
-    await sendPhotoBuffer(chatId, buf, '📅 Свободные окна на 2 недели')
+    await sendPhotoBuffer(chatId, buf, '📅 Свободные окна на месяц')
     return
   }
 
@@ -479,7 +481,7 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
   if (action === 'do') {
     const date = parts[1]
     const result = await toggleDayOff(date, cid)
-    await editMessageReplyMarkup(chatId, messageId, await buildDaysKeyboard('dayoff', cid))
+    await editMessageReplyMarkup(chatId, messageId, await buildDaysKeyboard('dayoff', cid, ctx.tz))
     return answerCallback(callbackId, result === 'added' ? '🌴 Выходной добавлен' : '✅ Выходной снят')
   }
 

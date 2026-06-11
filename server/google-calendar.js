@@ -23,6 +23,26 @@ const DEFAULT_CAL = () => process.env.GOOGLE_CALENDAR_ID
 export const TIME_SLOTS = ['10:00', '12:00', '14:00', '16:00', '18:00']
 const SLOT_HOURS = 2
 
+// How far ahead bookings are offered (site availability, bot menu, story).
+export const WINDOW_DAYS = 30
+
+// Current { date: 'YYYY-MM-DD', hour: 0-23 } in a given IANA timezone.
+export function nowInTz(tz = DEFAULT_TZ) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date())
+  const get = (t) => parts.find((p) => p.type === t)?.value
+  let hour = parseInt(get('hour'), 10)
+  if (hour === 24) hour = 0 // some runtimes emit 24 at midnight
+  return { date: `${get('year')}-${get('month')}-${get('day')}`, hour }
+}
+export const localToday = (tz = DEFAULT_TZ) => nowInTz(tz).date
+
 // Service-account credentials are global (shared across tenants)
 export function isCalendarConfigured() {
   return Boolean(process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY)
@@ -143,7 +163,7 @@ export async function deleteEvent(eventId, calendarId = DEFAULT_CAL()) {
 
 // ---- availability (blocks, days off, busy slots) ----------------------------
 
-export async function getAvailability(days = 14, calendarId = DEFAULT_CAL()) {
+export async function getAvailability(days = WINDOW_DAYS, calendarId = DEFAULT_CAL(), tz = DEFAULT_TZ) {
   if (!isCalendarConfigured() || !calendarId) return { busy: [], daysOff: [] }
   const now = Date.now()
   const items = await listWindow(
@@ -164,6 +184,11 @@ export async function getAvailability(days = 14, calendarId = DEFAULT_CAL()) {
       continue
     }
     if (p.slotDate && p.slotTime) busy.add(`${p.slotDate} ${p.slotTime}`)
+  }
+  // Today's already-started slots can't be booked (studio-timezone "now")
+  const { date: today, hour } = nowInTz(tz)
+  for (const t of TIME_SLOTS) {
+    if (parseInt(t, 10) <= hour) busy.add(`${today} ${t}`)
   }
   return { busy: [...busy], daysOff: [...daysOff] }
 }

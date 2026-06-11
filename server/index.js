@@ -11,7 +11,13 @@
 
 import express from 'express'
 
-import { isCalendarConfigured, createPendingEvent, getAvailability } from './google-calendar.js'
+import {
+  isCalendarConfigured,
+  createPendingEvent,
+  getAvailability,
+  nowInTz,
+  WINDOW_DAYS,
+} from './google-calendar.js'
 import { isTelegramConfigured, sendBookingToMaster, handleUpdate, setupWebhook } from './telegram.js'
 import { TENANTS, getTenant } from './tenants.js'
 
@@ -70,6 +76,14 @@ app.post('/api/booking', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Name and contact are required.' })
   }
 
+  // Reject slots already in the past (today, studio timezone)
+  if (date && time) {
+    const { date: today, hour } = nowInTz(tenant.timezone)
+    if (date < today || (date === today && parseInt(time, 10) <= hour)) {
+      return res.status(400).json({ ok: false, error: 'slot_in_past' })
+    }
+  }
+
   const ip = req.ip || req.socket?.remoteAddress || 'unknown'
   const key = `${tenant.id}:${ip}`
   if (usedToday(key) >= MAX_BOOKINGS_PER_IP_PER_DAY) {
@@ -101,7 +115,7 @@ app.get('/api/availability', async (req, res) => {
     return res.json({ busy: [], daysOff: [] })
   }
   try {
-    const data = await getAvailability(14, tenant.calendarId)
+    const data = await getAvailability(WINDOW_DAYS, tenant.calendarId, tenant.timezone)
     res.set('Cache-Control', 'public, max-age=60')
     return res.json(data)
   } catch (err) {

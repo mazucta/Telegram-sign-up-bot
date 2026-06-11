@@ -1,11 +1,12 @@
 // Generates an Instagram-story image (1080×1920) of the free booking slots
-// for the next two weeks. Background is either the site's palette or a photo
-// the master sends; the free times are drawn on top automatically.
+// for the next month, starting from today (the day the master requests it).
+// Background is either the site's palette or a photo the master sends; the
+// free times are drawn on top automatically.
 
 import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { getAvailability, addDays, TIME_SLOTS } from './google-calendar.js'
+import { getAvailability, TIME_SLOTS, WINDOW_DAYS, localToday, addDays } from './google-calendar.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 GlobalFonts.registerFromPath(path.join(__dirname, 'assets', 'PlayfairDisplay.ttf'), 'Playfair')
@@ -27,11 +28,11 @@ function monthName(dateStr, lang) {
 }
 
 /** Free slots per day for the next `days` days (skips days with none). */
-export async function computeFreeDays(days = 14, calendarId) {
-  const { busy, daysOff } = await getAvailability(days, calendarId)
+export async function computeFreeDays(days = WINDOW_DAYS, calendarId, tz) {
+  const { busy, daysOff } = await getAvailability(days, calendarId, tz)
   const busySet = new Set(busy)
   const offSet = new Set(daysOff)
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localToday(tz)
   const out = []
   for (let i = 0; i < days; i++) {
     const date = addDays(today, i)
@@ -52,7 +53,7 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath()
 }
 
-export async function renderScheduleImage({ lang = 'en', backgroundBuffer = null, calendarId } = {}) {
+export async function renderScheduleImage({ lang = 'en', backgroundBuffer = null, calendarId, tz } = {}) {
   const W = 1080
   const H = 1920
   const canvas = createCanvas(W, H)
@@ -77,8 +78,8 @@ export async function renderScheduleImage({ lang = 'en', backgroundBuffer = null
     ctx.fillRect(0, 0, W, H)
   }
 
-  const days = await computeFreeDays(14, calendarId)
-  const titleDate = days[0]?.date || new Date().toISOString().slice(0, 10)
+  const days = await computeFreeDays(WINDOW_DAYS, calendarId, tz)
+  const titleDate = days[0]?.date || localToday(tz)
 
   // --- Title (month) ---
   ctx.textAlign = 'center'
