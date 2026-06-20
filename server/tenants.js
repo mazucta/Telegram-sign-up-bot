@@ -23,7 +23,7 @@ export const TENANTS = [
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
-    calendarId: process.env.GOOGLE_CALENDAR_ID || '',
+    calendarId: process.env.GOOGLE_CALENDAR_ID || 'aliona.lomaka121212@gmail.com',
     timezone: process.env.STUDIO_TIMEZONE || 'Europe/Berlin',
     // Sites allowed to call the API for this tenant ('*' = any)
     allowedOrigins: ['*'],
