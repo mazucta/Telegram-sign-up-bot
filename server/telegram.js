@@ -10,6 +10,7 @@ import {
   confirmEvent,
   deleteEvent,
   getEvent,
+  listBookings,
   getAvailability,
   getDayStatus,
   toggleBlock,
@@ -308,6 +309,7 @@ async function finalizeConfirm({ ctx, eventId, messageId, originalText = '', dat
 const menuText = () => '⚙️ <b>Меню мастера</b>\nУправление расписанием:'
 const menuKeyboard = () => ({
   inline_keyboard: [
+    [{ text: '📒 Записи клиентов (перенос / отмена)', callback_data: 'm|bookings' }],
     [{ text: '🚫 Заблокировать / освободить время', callback_data: 'm|block' }],
     [{ text: '🌴 Выходные дни', callback_data: 'm|dayoff' }],
     [{ text: '📋 Расписание (месяц)', callback_data: 'm|list' }],
@@ -387,6 +389,35 @@ async function scheduleSummary(calendarId, tz) {
   return lines.join('\n')
 }
 
+const cancelTextForClient = ({ clientName, service, date, time }) =>
+  `Hello, ${clientName || ''}! Unfortunately I have to cancel your appointment (${service || 'booking'}, ${date} at ${time}). Please message me to find a new time. Sorry for the inconvenience! 💛`
+
+function bookingDetailText(b) {
+  const channel =
+    b.method === 'telegram' ? '✈️ Telegram' : b.method === 'instagram' ? '📷 Instagram' : '🟢 WhatsApp'
+  const st = b.status === 'pending' ? '🟡 Ожидает подтверждения' : '✅ Подтверждена'
+  return (
+    `📒 <b>Запись клиента</b>\n\n` +
+    `👤 <b>${b.clientName || '—'}</b>\n` +
+    `💅 ${b.service || '—'}\n` +
+    `📅 ${dayLabel(b.date)} 🕐 ${b.time || '—'}\n` +
+    `${channel}: ${b.contact || '—'}\n` +
+    `${st}`
+  )
+}
+
+async function buildBookingsKeyboard(calendarId, tz) {
+  const list = await listBookings(WINDOW_DAYS, calendarId, tz)
+  const rows = list.map((b) => [
+    {
+      text: `${b.status === 'pending' ? '🟡' : '✅'} ${dayLabel(b.date)} ${b.time} · ${b.clientName || '—'}`,
+      callback_data: `bk|${b.id}`,
+    },
+  ])
+  rows.push([{ text: '⬅️ Меню', callback_data: 'm|home' }])
+  return { markup: { inline_keyboard: rows }, empty: list.length === 0 }
+}
+
 async function onMenuCallback(data, callbackId, messageId, ctx) {
   if (!isCalendarConfigured()) return answerCallback(callbackId, 'Календарь не подключён')
   const parts = data.split('|')
@@ -398,6 +429,16 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
     const sub = parts[1]
     if (sub === 'home') {
       await editMessageText(chatId, messageId, menuText(), { reply_markup: menuKeyboard() })
+    } else if (sub === 'bookings') {
+      const { markup, empty } = await buildBookingsKeyboard(cid, ctx.tz)
+      await editMessageText(
+        chatId,
+        messageId,
+        empty
+          ? '📒 <b>Записи клиентов</b>\n\nАктивных записей нет.'
+          : '📒 <b>Записи клиентов</b>\nВыбери запись, чтобы перенести или отменить:',
+        { reply_markup: markup }
+      )
     } else if (sub === 'block') {
       await editMessageText(chatId, messageId, '🚫 <b>Блокировка времени</b>\nВыбери день:', {
         reply_markup: await buildDaysKeyboard('block', cid, ctx.tz),
@@ -492,6 +533,77 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
     const result = await toggleDayOff(date, cid)
     await editMessageReplyMarkup(chatId, messageId, await buildDaysKeyboard('dayoff', cid, ctx.tz))
     return answerCallback(callbackId, result === 'added' ? '🌴 Выходной добавлен' : '✅ Выходной снят')
+  }
+
+  // ---- client bookings: open one, reschedule or cancel it -------------------
+  if (action === 'bk' || action === 'br' || action === 'bx' || action === 'bxy') {
+    const id = parts[1]
+    const booking = (await listBookings(WINDOW_DAYS, cid, ctx.tz)).find((b) => b.id === id)
+
+    // The record is gone (already cancelled elsewhere) — fall back to the list.
+    if (!booking && action !== 'bxy') {
+      const { markup } = await buildBookingsKeyboard(cid, ctx.tz)
+      await editMessageText(chatId, messageId, '📒 <b>Записи клиентов</b>\n\nЭта запись уже неактуальна.', {
+        reply_markup: markup,
+      })
+      return answerCallback(callbackId, 'Запись не найдена')
+    }
+
+    if (action === 'bk') {
+      await editMessageText(chatId, messageId, bookingDetailText(booking), {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🕐 Перенести', callback_data: `br|${id}` }],
+            [{ text: '❌ Отменить запись', callback_data: `bx|${id}` }],
+            [{ text: '⬅️ К записям', callback_data: 'm|bookings' }],
+          ],
+        },
+      })
+      return answerCallback(callbackId)
+    }
+
+    if (action === 'br') {
+      awaitingTime.set(String(chatId), { eventId: id, messageId, originalText: bookingDetailText(booking), ctx })
+      await sendMessage(
+        chatId,
+        '🕐 Пришли новое время как <b>ГГГГ-ММ-ДД ЧЧ:ММ</b> (или просто <b>ЧЧ:ММ</b>, чтобы оставить дату).'
+      )
+      return answerCallback(callbackId, 'Жду новое время')
+    }
+
+    if (action === 'bx') {
+      await editMessageText(
+        chatId,
+        messageId,
+        `${bookingDetailText(booking)}\n\n⚠️ Точно отменить эту запись?`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✅ Да, отменить', callback_data: `bxy|${id}` }],
+              [{ text: '⬅️ Назад', callback_data: `bk|${id}` }],
+            ],
+          },
+        }
+      )
+      return answerCallback(callbackId)
+    }
+
+    if (action === 'bxy') {
+      if (booking) await deleteEvent(id, cid)
+      const btn = booking ? messageClientButton(booking.method, booking.contact, cancelTextForClient(booking)) : null
+      const summary =
+        '❌ <b>Запись отменена</b>' +
+        (booking ? `\n${dayLabel(booking.date)} ${booking.time} · ${booking.clientName || ''}` : '')
+      await editMessageText(chatId, messageId, summary, {
+        reply_markup: {
+          inline_keyboard: [
+            ...(btn ? [[btn]] : []),
+            [{ text: '⬅️ К записям', callback_data: 'm|bookings' }],
+          ],
+        },
+      })
+      return answerCallback(callbackId, 'Отменено')
+    }
   }
 
   return answerCallback(callbackId)

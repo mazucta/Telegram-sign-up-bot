@@ -163,6 +163,36 @@ export async function deleteEvent(eventId, calendarId = DEFAULT_CAL()) {
   await getCalendar().events.delete({ calendarId, eventId })
 }
 
+// Active client bookings (pending + confirmed) in the upcoming window, sorted by
+// time. Blocks and days-off are excluded — this is only real client records, so
+// the master can reschedule or cancel them from the menu.
+export async function listBookings(days = WINDOW_DAYS, calendarId = DEFAULT_CAL(), tz = DEFAULT_TZ) {
+  if (!isCalendarConfigured() || !calendarId) return []
+  const now = Date.now()
+  const items = await listWindow(
+    new Date(now - 6 * 3600e3).toISOString(),
+    new Date(now + (days + 1) * 24 * 3600e3).toISOString(),
+    calendarId
+  )
+  const bookings = []
+  for (const ev of items) {
+    const p = ev.extendedProperties?.private || {}
+    if (p.type === 'block' || p.type === 'dayoff') continue
+    if (!p.clientName) continue
+    bookings.push({
+      id: ev.id,
+      status: p.status || 'confirmed',
+      clientName: p.clientName || '',
+      service: p.service || '',
+      method: p.method || 'whatsapp',
+      contact: p.contact || '',
+      date: p.slotDate || (ev.start?.dateTime || '').slice(0, 10),
+      time: p.slotTime || '',
+    })
+  }
+  return bookings.sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`))
+}
+
 // ---- availability (blocks, days off, busy slots) ----------------------------
 
 export async function getAvailability(days = WINDOW_DAYS, calendarId = DEFAULT_CAL(), tz = DEFAULT_TZ) {
