@@ -19,8 +19,8 @@ const CONFIRMED_PREFIX = '✅ '
 const DEFAULT_TZ = process.env.STUDIO_TIMEZONE || 'Europe/Berlin'
 const DEFAULT_CAL = () => process.env.GOOGLE_CALENDAR_ID
 
-// Bookable hours (shared by bot, website and story). Every two hours, 2h each.
-export const TIME_SLOTS = ['10:00', '12:00', '14:00', '16:00', '18:00']
+// Bookable hours (shared by bot, website and story). Every two hours, 10:00–20:00.
+export const TIME_SLOTS = ['10:00', '12:00', '14:00', '16:00', '18:00', '20:00']
 const SLOT_HOURS = 2
 
 // How far ahead bookings are offered (site availability, bot menu, story).
@@ -83,10 +83,12 @@ function slot(date, time, tz) {
   }
 }
 
+const METHOD_LABELS = { telegram: 'Telegram', instagram: 'Instagram', whatsapp: 'WhatsApp' }
+
 function buildDescription(booking) {
   return [
     `Client: ${booking.name}`,
-    `${booking.method === 'telegram' ? 'Telegram' : 'WhatsApp'}: ${booking.contact}`,
+    `${METHOD_LABELS[booking.method] || 'WhatsApp'}: ${booking.contact}`,
     `Service: ${booking.service || '-'}`,
     `Message: ${booking.message || '-'}`,
   ].join('\n')

@@ -108,10 +108,14 @@ function fmtWhen(event) {
 
 function messageClientButton(method, contact, text) {
   if (!contact) return null
-  const url =
-    method === 'telegram'
-      ? `https://t.me/${contact.replace(/^@/, '')}`
-      : `https://wa.me/${contact.replace(/[^\d]/g, '')}?text=${encodeURIComponent(text)}`
+  let url
+  if (method === 'telegram') {
+    url = `https://t.me/${contact.replace(/^@/, '')}`
+  } else if (method === 'instagram') {
+    url = `https://instagram.com/${contact.replace(/^@/, '')}`
+  } else {
+    url = `https://wa.me/${contact.replace(/[^\d]/g, '')}?text=${encodeURIComponent(text)}`
+  }
   return { text: '✍️ Message client', url }
 }
 
@@ -119,7 +123,12 @@ const confirmationTextForClient = ({ clientName, service, date, time }) =>
   `Hello, ${clientName || ''}! Your appointment is confirmed: ${service || 'booking'}, ${date} at ${time}. If you need to reschedule, just message me. See you! 💛`
 
 function bookingCard(booking) {
-  const channel = booking.method === 'telegram' ? '✈️ Telegram' : '🟢 WhatsApp'
+  const channel =
+    booking.method === 'telegram'
+      ? '✈️ Telegram'
+      : booking.method === 'instagram'
+        ? '📷 Instagram'
+        : '🟢 WhatsApp'
   return (
     `🆕 <b>New booking</b>\n\n` +
     `👤 <b>${booking.name}</b>\n` +
