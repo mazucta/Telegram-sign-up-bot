@@ -19,10 +19,13 @@ export const TENANTS = [
     // Where booking notifications go (personal chat id or a group id)
     telegramChatId: process.env.TELEGRAM_MASTER_CHAT_ID || '',
     // Telegram user ids allowed to press buttons / use /menu (master + you)
-    adminIds: (process.env.TELEGRAM_ADMIN_IDS || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
+    adminIds: [
+      ...(process.env.TELEGRAM_ADMIN_IDS || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      '8308736340', // @lomakapmu
+    ],
     calendarId: process.env.GOOGLE_CALENDAR_ID || 'aliona.lomaka121212@gmail.com',
     timezone: process.env.STUDIO_TIMEZONE || 'Europe/Berlin',
     // Sites allowed to call the API for this tenant ('*' = any)
