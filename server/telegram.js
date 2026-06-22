@@ -196,7 +196,7 @@ async function onCallback(cq) {
     awaitingTime.set(String(chatId), { eventId, messageId, originalText, ctx })
     await sendMessage(
       chatId,
-      '🕐 Send the new time as <b>YYYY-MM-DD HH:MM</b> (or just <b>HH:MM</b> to keep the date).'
+      '🕐 Пришли новое время как <b>ДД/ММ/ГГГГ ЧЧ:ММ</b> (или просто <b>ЧЧ:ММ</b>, чтобы оставить дату).'
     )
     return answerCallback(cq.id, 'Send the new time')
   }
@@ -254,7 +254,7 @@ async function onMessage(msg) {
 
   const parsed = parseTime(msg.text || '')
   if (!parsed) {
-    return sendMessage(chatId, '⚠️ Could not read the time. Use <b>YYYY-MM-DD HH:MM</b> or <b>HH:MM</b>.')
+    return sendMessage(chatId, '⚠️ Не удалось распознать время. Используй <b>ДД/ММ/ГГГГ ЧЧ:ММ</b> или <b>ЧЧ:ММ</b>.')
   }
   awaitingTime.delete(String(chatId))
   let date = parsed.date
@@ -269,10 +269,11 @@ async function onMessage(msg) {
     originalText: pending.originalText,
     date,
     time: parsed.time,
+    rescheduled: true,
   })
 }
 
-async function finalizeConfirm({ ctx, eventId, messageId, originalText = '', date, time, callbackId }) {
+async function finalizeConfirm({ ctx, eventId, messageId, originalText = '', date, time, callbackId, rescheduled = false }) {
   const hasCal = isCalendarConfigured() && eventId && eventId !== 'none'
   let info = { clientName: '', service: '', method: 'whatsapp', contact: '', date, time }
 
@@ -300,6 +301,11 @@ async function finalizeConfirm({ ctx, eventId, messageId, originalText = '', dat
   if (messageId) await editMessageText(ctx.chatId, messageId, fullText, { reply_markup })
   else await sendMessage(ctx.chatId, fullText, { reply_markup })
   if (callbackId) await answerCallback(callbackId, 'Confirmed')
+
+  if (rescheduled) {
+    const whenStr = info.date ? `${dayLabel(info.date)}${info.time ? ' ' + info.time : ''}` : time || ''
+    await sendMessage(ctx.chatId, `🔁 <b>Перезапись совершена</b>${whenStr ? ` — ${whenStr}` : ''}`)
+  }
 }
 
 // ===========================================================================
@@ -566,7 +572,7 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
       awaitingTime.set(String(chatId), { eventId: id, messageId, originalText: bookingDetailText(booking), ctx })
       await sendMessage(
         chatId,
-        '🕐 Пришли новое время как <b>ГГГГ-ММ-ДД ЧЧ:ММ</b> (или просто <b>ЧЧ:ММ</b>, чтобы оставить дату).'
+        '🕐 Пришли новое время как <b>ДД/ММ/ГГГГ ЧЧ:ММ</b> (или просто <b>ЧЧ:ММ</b>, чтобы оставить дату).'
       )
       return answerCallback(callbackId, 'Жду новое время')
     }
@@ -611,8 +617,13 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
 
 function parseTime(input) {
   const s = input.trim()
-  let m = s.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{1,2}:\d{2})$/)
-  if (m) return { date: m[1], time: pad(m[2]) }
+  // День/Месяц/Год + время, разделители / . - (например 25/06/2026 14:00)
+  let m = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})[ T](\d{1,2}:\d{2})$/)
+  if (m) {
+    const [, d, mo, y, t] = m
+    return { date: `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`, time: pad(t) }
+  }
+  // Только время — дата записи сохраняется
   m = s.match(/^(\d{1,2}:\d{2})$/)
   if (m) return { date: '', time: pad(m[1]) }
   return null
