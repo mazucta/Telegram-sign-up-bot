@@ -17,6 +17,8 @@ import {
   toggleDayOff,
   blockWholeDay,
   unblockWholeDay,
+  getSlots,
+  setSlots,
   addDays,
   TIME_SLOTS,
   WINDOW_DAYS,
@@ -30,6 +32,7 @@ const TOKEN = () => process.env.TELEGRAM_BOT_TOKEN
 // Pending interactions, keyed by chat id (carry the tenant's calendar/tz)
 const awaitingTime = new Map()
 const pendingStory = new Map()
+const awaitingSlots = new Map()
 
 export function isTelegramConfigured() {
   return Boolean(process.env.TELEGRAM_BOT_TOKEN)
@@ -249,6 +252,20 @@ async function onMessage(msg) {
 
   if (cmd === '/start' || cmd === '/menu') return sendMenu(ctx)
 
+  // Master is sending the list of times to show on their site
+  if (awaitingSlots.has(String(chatId))) {
+    const times = parseSlotList(text)
+    if (!times.length) {
+      return sendMessage(
+        chatId,
+        '⚠️ Не удалось распознать времена. Пришли их через запятую, например <b>10:00, 12:00, 14:00</b>.'
+      )
+    }
+    awaitingSlots.delete(String(chatId))
+    const saved = await setSlots(times, ctx.calendarId)
+    return sendMessage(chatId, `✅ Время записи на сайте обновлено:\n<b>${saved.join(', ')}</b>`)
+  }
+
   const pending = awaitingTime.get(String(chatId))
   if (!pending) return
 
@@ -318,6 +335,7 @@ const menuKeyboard = () => ({
     [{ text: '📒 Записи клиентов (перенос / отмена)', callback_data: 'm|bookings' }],
     [{ text: '🚫 Заблокировать / освободить время', callback_data: 'm|block' }],
     [{ text: '🌴 Выходные дни', callback_data: 'm|dayoff' }],
+    [{ text: '🕐 Время записи на сайте', callback_data: 'm|slots' }],
     [{ text: '📋 Расписание (месяц)', callback_data: 'm|list' }],
     [{ text: '🖼 Картинка для сторис', callback_data: 'm|story' }],
   ],
@@ -356,10 +374,10 @@ async function buildDaysKeyboard(mode, calendarId, tz) {
   return { inline_keyboard: rows }
 }
 
-function buildSlotsKeyboard(date, status) {
+function buildSlotsKeyboard(date, status, slots = TIME_SLOTS) {
   const rows = []
   let row = []
-  for (const t of TIME_SLOTS) {
+  for (const t of slots) {
     const st = status[t]
     const icon = st === 'booked' ? '📅' : st === 'blocked' ? '🚫' : '🟢'
     row.push({ text: `${icon} ${t}`, callback_data: `bt|${date}|${t}` })
@@ -431,6 +449,9 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
   const cid = ctx.calendarId
   const chatId = ctx.chatId
 
+  // Any other menu tap cancels a pending "send me your times" prompt.
+  if (!(action === 'm' && parts[1] === 'slots')) awaitingSlots.delete(String(chatId))
+
   if (action === 'm') {
     const sub = parts[1]
     if (sub === 'home') {
@@ -444,6 +465,16 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
           ? '📒 <b>Записи клиентов</b>\n\nАктивных записей нет.'
           : '📒 <b>Записи клиентов</b>\nВыбери запись, чтобы перенести или отменить:',
         { reply_markup: markup }
+      )
+    } else if (sub === 'slots') {
+      const slots = await getSlots(cid)
+      awaitingSlots.set(String(chatId), ctx)
+      await editMessageText(
+        chatId,
+        messageId,
+        `🕐 <b>Время записи на сайте</b>\nСейчас на сайте показываются: <b>${slots.join(', ')}</b>\n\n` +
+          'Пришли новый список времён через запятую, например <b>10:00, 12:00, 14:00, 16:00, 18:00</b>.',
+        { reply_markup: { inline_keyboard: [[{ text: '⬅️ Меню', callback_data: 'm|home' }]] } }
       )
     } else if (sub === 'block') {
       await editMessageText(chatId, messageId, '🚫 <b>Блокировка времени</b>\nВыбери день:', {
@@ -506,12 +537,12 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
 
   if (action === 'bd') {
     const date = parts[1]
-    const { dayoff, status } = await getDayStatus(date, cid)
+    const [{ dayoff, status }, slots] = await Promise.all([getDayStatus(date, cid), getSlots(cid)])
     await editMessageText(
       chatId,
       messageId,
       `🚫 <b>${dayLabel(date)}</b>\n${dayoff ? '🌴 Выходной день\n' : ''}Нажми на слот, чтобы заблокировать / освободить:`,
-      { reply_markup: buildSlotsKeyboard(date, status) }
+      { reply_markup: buildSlotsKeyboard(date, status, slots) }
     )
     return answerCallback(callbackId)
   }
@@ -520,8 +551,8 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
     const [, date, time] = parts
     const result = await toggleBlock(date, time, cid, ctx.tz)
     if (result === 'booked') return answerCallback(callbackId, '📅 Этот слот занят записью клиента')
-    const { status } = await getDayStatus(date, cid)
-    await editMessageReplyMarkup(chatId, messageId, buildSlotsKeyboard(date, status))
+    const [{ status }, slots] = await Promise.all([getDayStatus(date, cid), getSlots(cid)])
+    await editMessageReplyMarkup(chatId, messageId, buildSlotsKeyboard(date, status, slots))
     return answerCallback(callbackId, result === 'blocked' ? '🚫 Заблокировано' : '🟢 Освобождено')
   }
 
@@ -529,8 +560,8 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
     const date = parts[1]
     if (action === 'ba') await blockWholeDay(date, cid, ctx.tz)
     else await unblockWholeDay(date, cid)
-    const { status } = await getDayStatus(date, cid)
-    await editMessageReplyMarkup(chatId, messageId, buildSlotsKeyboard(date, status))
+    const [{ status }, slots] = await Promise.all([getDayStatus(date, cid), getSlots(cid)])
+    await editMessageReplyMarkup(chatId, messageId, buildSlotsKeyboard(date, status, slots))
     return answerCallback(callbackId, action === 'ba' ? '🚫 День заблокирован' : '🟢 День освобождён')
   }
 
@@ -632,4 +663,18 @@ function parseTime(input) {
 const pad = (hhmm) => {
   const [h, m] = hhmm.split(':')
   return `${h.padStart(2, '0')}:${m}`
+}
+
+// Pull every HH:MM out of free text, normalize and dedupe, e.g.
+// "10, 12:00 14.00" → ['10:00', '12:00', '14:00']. (Lone hours like "10" → 10:00)
+function parseSlotList(input) {
+  const tokens = input.match(/\d{1,2}(?::\d{2})?/g) || []
+  const set = new Set()
+  for (const tok of tokens) {
+    const [h, m = '00'] = tok.split(':')
+    const hour = parseInt(h, 10)
+    if (hour > 23 || parseInt(m, 10) > 59) continue
+    set.add(`${String(hour).padStart(2, '0')}:${m.padStart(2, '0')}`)
+  }
+  return [...set].sort()
 }

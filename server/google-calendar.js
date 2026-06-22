@@ -193,10 +193,59 @@ export async function listBookings(days = WINDOW_DAYS, calendarId = DEFAULT_CAL(
   return bookings.sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`))
 }
 
+// ---- custom bookable times (per master) -------------------------------------
+//
+// Each master can choose which start times appear on their site. We persist the
+// list inside their own calendar as a marker event (type=slotsconfig) on a fixed
+// far-past date, so it never shows up in the 30-day availability window. When a
+// master hasn't set anything, TIME_SLOTS is the default.
+
+const SLOTS_CONFIG_DATE = '2000-01-01'
+
+async function findSlotsConfig(calendarId) {
+  const res = await getCalendar().events.list({
+    calendarId,
+    privateExtendedProperty: 'type=slotsconfig',
+    maxResults: 5,
+    singleEvents: true,
+  })
+  return (res.data.items || [])[0] || null
+}
+
+export async function getSlots(calendarId = DEFAULT_CAL()) {
+  if (!isCalendarConfigured() || !calendarId) return TIME_SLOTS
+  try {
+    const ev = await findSlotsConfig(calendarId)
+    const list = (ev?.extendedProperties?.private?.slots || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    return list.length ? list : TIME_SLOTS
+  } catch {
+    return TIME_SLOTS
+  }
+}
+
+export async function setSlots(slots, calendarId = DEFAULT_CAL()) {
+  const clean = [...new Set(slots.map(normTime))].sort()
+  if (!clean.length) throw new Error('no_slots')
+  const requestBody = {
+    summary: '⏳ Booking time slots (config)',
+    start: { date: SLOTS_CONFIG_DATE },
+    end: { date: addDays(SLOTS_CONFIG_DATE, 1) },
+    transparency: 'transparent',
+    extendedProperties: { private: { type: 'slotsconfig', slots: clean.join(',') } },
+  }
+  const ev = await findSlotsConfig(calendarId)
+  if (ev) await getCalendar().events.patch({ calendarId, eventId: ev.id, requestBody })
+  else await getCalendar().events.insert({ calendarId, requestBody })
+  return clean
+}
+
 // ---- availability (blocks, days off, busy slots) ----------------------------
 
 export async function getAvailability(days = WINDOW_DAYS, calendarId = DEFAULT_CAL(), tz = DEFAULT_TZ) {
-  if (!isCalendarConfigured() || !calendarId) return { busy: [], daysOff: [] }
+  if (!isCalendarConfigured() || !calendarId) return { busy: [], daysOff: [], slots: TIME_SLOTS }
   const now = Date.now()
   const items = await listWindow(
     new Date(now - 24 * 3600e3).toISOString(),
@@ -218,11 +267,12 @@ export async function getAvailability(days = WINDOW_DAYS, calendarId = DEFAULT_C
     if (p.slotDate && p.slotTime) busy.add(`${p.slotDate} ${p.slotTime}`)
   }
   // Today's already-started slots can't be booked (studio-timezone "now")
+  const slots = await getSlots(calendarId)
   const { date: today, hour } = nowInTz(tz)
-  for (const t of TIME_SLOTS) {
+  for (const t of slots) {
     if (parseInt(t, 10) <= hour) busy.add(`${today} ${t}`)
   }
-  return { busy: [...busy], daysOff: [...daysOff] }
+  return { busy: [...busy], daysOff: [...daysOff], slots }
 }
 
 export async function getDayStatus(date, calendarId = DEFAULT_CAL()) {
@@ -279,7 +329,8 @@ export async function blockWholeDay(date, calendarId = DEFAULT_CAL(), tz = DEFAU
     const p = ev.extendedProperties?.private || {}
     if (p.slotDate === date && p.slotTime) taken.add(p.slotTime)
   }
-  for (const t of TIME_SLOTS) if (!taken.has(t)) await createBlock(date, t, calendarId, tz)
+  const slots = await getSlots(calendarId)
+  for (const t of slots) if (!taken.has(t)) await createBlock(date, t, calendarId, tz)
 }
 
 export async function unblockWholeDay(date, calendarId = DEFAULT_CAL()) {

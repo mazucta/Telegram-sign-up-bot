@@ -6,7 +6,7 @@
 import { createCanvas, loadImage, GlobalFonts } from '@napi-rs/canvas'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { getAvailability, TIME_SLOTS, WINDOW_DAYS, localToday, addDays } from './google-calendar.js'
+import { getAvailability, WINDOW_DAYS, localToday, addDays } from './google-calendar.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 GlobalFonts.registerFromPath(path.join(__dirname, 'assets', 'PlayfairDisplay.ttf'), 'Playfair')
@@ -29,7 +29,7 @@ function monthName(dateStr, lang) {
 
 /** Free slots per day for the next `days` days (skips days with none). */
 export async function computeFreeDays(days = WINDOW_DAYS, calendarId, tz) {
-  const { busy, daysOff } = await getAvailability(days, calendarId, tz)
+  const { busy, daysOff, slots } = await getAvailability(days, calendarId, tz)
   const busySet = new Set(busy)
   const offSet = new Set(daysOff)
   const today = localToday(tz)
@@ -37,7 +37,7 @@ export async function computeFreeDays(days = WINDOW_DAYS, calendarId, tz) {
   for (let i = 0; i < days; i++) {
     const date = addDays(today, i)
     if (offSet.has(date)) continue
-    const free = TIME_SLOTS.filter((t) => !busySet.has(`${date} ${t}`))
+    const free = slots.filter((t) => !busySet.has(`${date} ${t}`))
     if (free.length) out.push({ date, free })
   }
   return out
