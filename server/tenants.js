@@ -43,6 +43,19 @@ export const TENANTS = [
     allowedOrigins: ['*'],
   },
 
+  {
+    id: 'test',
+    name: 'Test sandbox (admin)',
+    telegramChatId: '5609757241', // your personal chat — /menu here drives this tenant
+    adminIds: ['5609757241'],
+    // ponytail: put YOUR Google Calendar id here (shared with GOOGLE_CLIENT_EMAIL,
+    // "Make changes to events") to test slots/bookings/reschedule. Leave '' and the
+    // calendar features just show "не подключён".
+    calendarId: '',
+    timezone: 'Europe/Tallinn',
+    allowedOrigins: ['*'],
+  },
+
   // --- Add more masters here ---
   // {
   //   id: 'olena',
