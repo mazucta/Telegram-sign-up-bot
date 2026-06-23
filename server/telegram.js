@@ -177,7 +177,7 @@ async function onCallback(cq) {
   const tenant = tenantByChatId(chatId)
   if (!tenant || !isTenantAdmin(tenant, cq.from?.id)) return answerCallback(cq.id)
 
-  const ctx = { chatId, calendarId: tenant.calendarId, tz: tenant.timezone }
+  const ctx = { chatId, calendarId: tenant.calendarId, tz: tenant.timezone, availability: tenant.availability || [] }
   const data = cq.data || ''
   const messageId = cq.message?.message_id
 
@@ -229,7 +229,7 @@ async function onMessage(msg) {
   }
 
   if (!isTenantAdmin(tenant, msg.from?.id)) return
-  const ctx = { chatId, calendarId: tenant.calendarId, tz: tenant.timezone }
+  const ctx = { chatId, calendarId: tenant.calendarId, tz: tenant.timezone, availability: tenant.availability || [] }
 
   // Photo while waiting for a story background → generate the image
   if (msg.photo?.length) {
@@ -244,6 +244,7 @@ async function onMessage(msg) {
         backgroundBuffer: bg,
         calendarId: ctx.calendarId,
         tz: ctx.tz,
+        curated: ctx.availability,
       })
       await sendPhotoBuffer(chatId, buf, '📅 Свободные окна на месяц')
     }
@@ -530,7 +531,7 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
       return answerCallback(callbackId)
     }
     await answerCallback(callbackId, 'Генерирую…')
-    const buf = await renderScheduleImage({ lang, calendarId: cid, tz: ctx.tz })
+    const buf = await renderScheduleImage({ lang, calendarId: cid, tz: ctx.tz, curated: ctx.availability })
     await sendPhotoBuffer(chatId, buf, '📅 Свободные окна на месяц')
     return
   }

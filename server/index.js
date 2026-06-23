@@ -111,16 +111,18 @@ app.post('/api/booking', async (req, res) => {
 
 app.get('/api/availability', async (req, res) => {
   const tenant = getTenant(String(req.query.tenant || ''))
-  if (!tenant || !isCalendarConfigured() || !tenant.calendarId) {
-    return res.json({ busy: [], daysOff: [] })
+  if (!tenant) return res.json({ busy: [], daysOff: [], curated: [] })
+  const curated = tenant.availability || []
+  if (!isCalendarConfigured() || !tenant.calendarId) {
+    return res.json({ busy: [], daysOff: [], curated })
   }
   try {
     const data = await getAvailability(WINDOW_DAYS, tenant.calendarId, tenant.timezone)
     res.set('Cache-Control', 'public, max-age=60')
-    return res.json(data)
+    return res.json({ ...data, curated })
   } catch (err) {
     console.error('Availability failed:', err)
-    return res.json({ busy: [], daysOff: [] })
+    return res.json({ busy: [], daysOff: [], curated })
   }
 })
 

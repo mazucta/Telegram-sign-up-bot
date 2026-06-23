@@ -27,12 +27,19 @@ function monthName(dateStr, lang) {
   return n.charAt(0).toUpperCase() + n.slice(1)
 }
 
-/** Free slots per day for the next `days` days (skips days with none). */
-export async function computeFreeDays(days = WINDOW_DAYS, calendarId, tz) {
+/** Free slots per day. Curated list (if any) wins — only those dates appear,
+ *  matching the site exactly. Otherwise, free calendar slots over `days`. */
+export async function computeFreeDays(days = WINDOW_DAYS, calendarId, tz, curated = []) {
+  const today = localToday(tz)
+  if (curated.length) {
+    return curated
+      .filter((s) => s.date >= today && s.times?.length)
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map((s) => ({ date: s.date, free: [...s.times].sort() }))
+  }
   const { busy, daysOff, slots } = await getAvailability(days, calendarId, tz)
   const busySet = new Set(busy)
   const offSet = new Set(daysOff)
-  const today = localToday(tz)
   const out = []
   for (let i = 0; i < days; i++) {
     const date = addDays(today, i)
@@ -53,7 +60,7 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath()
 }
 
-export async function renderScheduleImage({ lang = 'en', backgroundBuffer = null, calendarId, tz } = {}) {
+export async function renderScheduleImage({ lang = 'en', backgroundBuffer = null, calendarId, tz, curated = [] } = {}) {
   const W = 1080
   const H = 1920
   const canvas = createCanvas(W, H)
@@ -78,7 +85,7 @@ export async function renderScheduleImage({ lang = 'en', backgroundBuffer = null
     ctx.fillRect(0, 0, W, H)
   }
 
-  const days = await computeFreeDays(WINDOW_DAYS, calendarId, tz)
+  const days = await computeFreeDays(WINDOW_DAYS, calendarId, tz, curated)
   const titleDate = days[0]?.date || localToday(tz)
 
   // --- Title (month) ---

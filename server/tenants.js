@@ -30,6 +30,21 @@ export const TENANTS = [
     timezone: process.env.STUDIO_TIMEZONE || 'Europe/Berlin',
     // Sites allowed to call the API for this tenant ('*' = any)
     allowedOrigins: ['*'],
+    // Curated free slots (single source: the site form AND the story image read
+    // this). Empty/absent → automatic 10:00–20:00 mode. Past dates hide themselves.
+    availability: [
+      { date: '2026-07-03', times: ['09:30'] },
+      { date: '2026-07-07', times: ['15:00', '17:30'] },
+      { date: '2026-07-08', times: ['08:30'] },
+      { date: '2026-07-09', times: ['09:30'] },
+      { date: '2026-07-14', times: ['14:30', '17:00'] },
+      { date: '2026-07-15', times: ['17:30'] },
+      { date: '2026-07-17', times: ['09:00'] },
+      { date: '2026-07-22', times: ['14:30', '17:00'] },
+      { date: '2026-07-23', times: ['08:30', '10:00'] },
+      { date: '2026-07-28', times: ['14:30', '17:00'] },
+      { date: '2026-07-29', times: ['14:30', '17:00'] },
+    ],
   },
 
   {
