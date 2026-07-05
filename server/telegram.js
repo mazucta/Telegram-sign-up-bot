@@ -19,6 +19,10 @@ import {
   unblockWholeDay,
   getSlots,
   setSlots,
+  getCurated,
+  saveCurated,
+  toggleCuratedTime,
+  filterCurated,
   addDays,
   TIME_SLOTS,
   WINDOW_DAYS,
@@ -33,6 +37,7 @@ const TOKEN = () => process.env.TELEGRAM_BOT_TOKEN
 const awaitingTime = new Map()
 const pendingStory = new Map()
 const awaitingSlots = new Map()
+const awaitingMonth = new Map()
 
 export function isTelegramConfigured() {
   return Boolean(process.env.TELEGRAM_BOT_TOKEN)
@@ -196,6 +201,10 @@ async function onCallback(cq) {
   }
 
   if (action === 'r') {
+    // The reschedule prompt supersedes any pending "send me times" prompt —
+    // otherwise the master's reply would be swallowed as a slots/month list.
+    awaitingSlots.delete(String(chatId))
+    awaitingMonth.delete(String(chatId))
     awaitingTime.set(String(chatId), { eventId, messageId, originalText, ctx })
     await sendMessage(
       chatId,
@@ -244,7 +253,7 @@ async function onMessage(msg) {
         backgroundBuffer: bg,
         calendarId: ctx.calendarId,
         tz: ctx.tz,
-        curated: ctx.availability,
+        curated: await curatedFor(ctx),
       })
       await sendPhotoBuffer(chatId, buf, '📅 Свободные окна на месяц')
     }
@@ -252,6 +261,23 @@ async function onMessage(msg) {
   }
 
   if (cmd === '/start' || cmd === '/menu') return sendMenu(ctx)
+
+  // Master is sending the whole month's dates+times for the site
+  if (awaitingMonth.has(String(chatId))) {
+    const entries = parseMonthList(text, ctx.tz)
+    if (!entries.length) {
+      return sendMessage(
+        chatId,
+        '⚠️ Не удалось распознать. Каждая строка: <b>ДД.ММ время время…</b>, например <b>07.07 15:00 17:30</b>.'
+      )
+    }
+    awaitingMonth.delete(String(chatId))
+    const saved = await saveCurated(entries, ctx.calendarId, ctx.tz)
+    if (!saved.length) return sendMessage(chatId, '⚠️ Все присланные даты уже в прошлом — ничего не сохранено.')
+    const lines = saved.map((s) => `• ${dayLabel(s.date)}: ${s.times.join(', ')}`).join('\n')
+    // ponytail: hard cut at Telegram's 4096-char message limit; a real month never hits it
+    return sendMessage(chatId, `✅ Время записи на сайте обновлено:\n${lines}`.slice(0, 4000))
+  }
 
   // Master is sending the list of times to show on their site
   if (awaitingSlots.has(String(chatId))) {
@@ -264,7 +290,7 @@ async function onMessage(msg) {
     }
     awaitingSlots.delete(String(chatId))
     const saved = await setSlots(times, ctx.calendarId)
-    return sendMessage(chatId, `✅ Время записи на сайте обновлено:\n<b>${saved.join(', ')}</b>`)
+    return sendMessage(chatId, `✅ Общее время (на все дни) обновлено:\n<b>${saved.join(', ')}</b>`)
   }
 
   const pending = awaitingTime.get(String(chatId))
@@ -354,6 +380,16 @@ function dayLabel(dateStr) {
   return d.toLocaleDateString('ru-RU', { weekday: 'short', day: 'numeric', month: 'short' })
 }
 
+// Per-date times for the site/story: calendar-stored (bot-editable) wins,
+// hardcoded tenant list is the fallback; taken slots and days off are hidden.
+async function curatedFor(ctx) {
+  const [stored, av] = await Promise.all([
+    getCurated(ctx.calendarId),
+    getAvailability(WINDOW_DAYS, ctx.calendarId, ctx.tz),
+  ])
+  return filterCurated(stored.length ? stored : ctx.availability, av, ctx.tz)
+}
+
 async function buildDaysKeyboard(mode, calendarId, tz) {
   const today = localToday(tz)
   let off = new Set()
@@ -372,6 +408,62 @@ async function buildDaysKeyboard(mode, calendarId, tz) {
   }
   if (row.length) rows.push(row)
   rows.push([{ text: '⬅️ Меню', callback_data: 'm|home' }])
+  return { inline_keyboard: rows }
+}
+
+// ---- site availability editor (per-date times shown in the site form) -------
+
+const AVAIL_TIMES = (() => {
+  const out = []
+  for (let h = 8; h <= 20; h++) out.push(`${String(h).padStart(2, '0')}:00`, `${String(h).padStart(2, '0')}:30`)
+  return out
+})()
+
+const availText = () =>
+  '🕐 <b>Время записи на сайте</b>\n' +
+  'Выбери дату и отметь времена — клиенты на сайте увидят только их.\n' +
+  'Пока ни одна дата не задана, сайт показывает общее время на все дни.'
+
+async function buildAvailKeyboard(calendarId, tz) {
+  const curated = new Map((await getCurated(calendarId)).map((s) => [s.date, s.times]))
+  const today = localToday(tz)
+  const rows = []
+  let row = []
+  for (let i = 0; i < WINDOW_DAYS; i++) {
+    const date = addDays(today, i)
+    const times = curated.get(date)
+    row.push({
+      text: times ? `🟢 ${dayLabel(date)} · ${times.length}` : dayLabel(date),
+      callback_data: `av|${date}`,
+    })
+    if (row.length === 2) {
+      rows.push(row)
+      row = []
+    }
+  }
+  if (row.length) rows.push(row)
+  rows.push([{ text: '📆 Задать весь месяц списком', callback_data: 'av|month' }])
+  rows.push([{ text: '🌍 Общее время (на все дни)', callback_data: 'av|global' }])
+  rows.push([{ text: '⬅️ Меню', callback_data: 'm|home' }])
+  return { inline_keyboard: rows }
+}
+
+function buildAvailDayKeyboard(date, times) {
+  const sel = new Set(times)
+  const rows = []
+  let row = []
+  for (const t of AVAIL_TIMES) {
+    row.push({ text: sel.has(t) ? `🟢 ${t}` : t, callback_data: `at|${date}|${t}` })
+    if (row.length === 4) {
+      rows.push(row)
+      row = []
+    }
+  }
+  if (row.length) rows.push(row)
+  rows.push([
+    { text: '🧹 Очистить день', callback_data: `ac|${date}` },
+    { text: '⬅️ К датам', callback_data: 'm|slots' },
+  ])
   return { inline_keyboard: rows }
 }
 
@@ -450,8 +542,10 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
   const cid = ctx.calendarId
   const chatId = ctx.chatId
 
-  // Any other menu tap cancels a pending "send me your times" prompt.
-  if (!(action === 'm' && parts[1] === 'slots')) awaitingSlots.delete(String(chatId))
+  // Any menu tap cancels pending text prompts (the handlers below re-arm them).
+  awaitingSlots.delete(String(chatId))
+  awaitingMonth.delete(String(chatId))
+  awaitingTime.delete(String(chatId))
 
   if (action === 'm') {
     const sub = parts[1]
@@ -468,15 +562,9 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
         { reply_markup: markup }
       )
     } else if (sub === 'slots') {
-      const slots = await getSlots(cid)
-      awaitingSlots.set(String(chatId), ctx)
-      await editMessageText(
-        chatId,
-        messageId,
-        `🕐 <b>Время записи на сайте</b>\nСейчас на сайте показываются: <b>${slots.join(', ')}</b>\n\n` +
-          'Пришли новый список времён через запятую, например <b>10:00, 12:00, 14:00, 16:00, 18:00</b>.',
-        { reply_markup: { inline_keyboard: [[{ text: '⬅️ Меню', callback_data: 'm|home' }]] } }
-      )
+      await editMessageText(chatId, messageId, availText(), {
+        reply_markup: await buildAvailKeyboard(cid, ctx.tz),
+      })
     } else if (sub === 'block') {
       await editMessageText(chatId, messageId, '🚫 <b>Блокировка времени</b>\nВыбери день:', {
         reply_markup: await buildDaysKeyboard('block', cid, ctx.tz),
@@ -531,9 +619,62 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
       return answerCallback(callbackId)
     }
     await answerCallback(callbackId, 'Генерирую…')
-    const buf = await renderScheduleImage({ lang, calendarId: cid, tz: ctx.tz, curated: ctx.availability })
+    const buf = await renderScheduleImage({ lang, calendarId: cid, tz: ctx.tz, curated: await curatedFor(ctx) })
     await sendPhotoBuffer(chatId, buf, '📅 Свободные окна на месяц')
     return
+  }
+
+  // ---- site availability editor ---------------------------------------------
+  if (action === 'av') {
+    const arg = parts[1]
+    if (arg === 'global') {
+      awaitingSlots.set(String(chatId), ctx)
+      const slots = await getSlots(cid)
+      await editMessageText(
+        chatId,
+        messageId,
+        `🌍 <b>Общее время (на все дни)</b>\nИспользуется, пока даты не заданы кнопками.\nСейчас: <b>${slots.join(', ')}</b>\n\n` +
+          'Пришли новый список времён через запятую, например <b>10:00, 12:00, 14:00, 16:00, 18:00</b>.',
+        { reply_markup: { inline_keyboard: [[{ text: '⬅️ К датам', callback_data: 'm|slots' }]] } }
+      )
+      return answerCallback(callbackId)
+    }
+    if (arg === 'month') {
+      awaitingMonth.set(String(chatId), ctx)
+      await editMessageText(
+        chatId,
+        messageId,
+        '📆 <b>Весь месяц одним сообщением</b>\nПришли список: каждая строка — дата и времена. Например:\n\n' +
+          '<code>03.07 09:30\n07.07 15:00 17:30\n08.07 08:30 10:00</code>\n\n' +
+          '⚠️ Список на сайте будет заменён целиком.',
+        { reply_markup: { inline_keyboard: [[{ text: '⬅️ К датам', callback_data: 'm|slots' }]] } }
+      )
+      return answerCallback(callbackId)
+    }
+    const times = (await getCurated(cid)).find((s) => s.date === arg)?.times || []
+    await editMessageText(
+      chatId,
+      messageId,
+      `🕐 <b>${dayLabel(arg)}</b>\nОтметь времена, доступные для записи на сайте:`,
+      { reply_markup: buildAvailDayKeyboard(arg, times) }
+    )
+    return answerCallback(callbackId)
+  }
+
+  if (action === 'at') {
+    const [, date, time] = parts
+    const times = await toggleCuratedTime(date, time, cid, ctx.tz)
+    await editMessageReplyMarkup(chatId, messageId, buildAvailDayKeyboard(date, times))
+    return answerCallback(callbackId, times.includes(time) ? `🟢 ${time} добавлено` : `${time} убрано`)
+  }
+
+  if (action === 'ac') {
+    const date = parts[1]
+    const list = await getCurated(cid)
+    if (!list.some((s) => s.date === date)) return answerCallback(callbackId, 'День уже пуст')
+    await saveCurated(list.filter((s) => s.date !== date), cid, ctx.tz)
+    await editMessageReplyMarkup(chatId, messageId, buildAvailDayKeyboard(date, []))
+    return answerCallback(callbackId, '🧹 День очищен')
   }
 
   if (action === 'bd') {
@@ -666,13 +807,33 @@ const pad = (hhmm) => {
   return `${h.padStart(2, '0')}:${m}`
 }
 
+// One month in free text: each line "ДД.ММ[.ГГГГ] время время…" → [{date, times}].
+// Year defaults to the current one; a date already past rolls to next year.
+function parseMonthList(input, tz) {
+  const today = localToday(tz)
+  const entries = []
+  for (const line of input.split('\n')) {
+    const m = line.match(/^\s*(\d{1,2})[./-](\d{1,2})(?:[./-](\d{4}|\d{2}(?![\d:])))?\s*[:—-]?\s*(.*)$/)
+    if (!m) continue
+    const [, d, mo, y, rest] = m
+    if (+d < 1 || +d > 31 || +mo < 1 || +mo > 12) continue
+    const times = parseSlotList(rest)
+    if (!times.length) continue
+    const year = y ? (y.length === 2 ? `20${y}` : y) : today.slice(0, 4)
+    let date = `${year}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`
+    if (!y && date < today) date = `${Number(year) + 1}${date.slice(4)}`
+    entries.push({ date, times })
+  }
+  return entries
+}
+
 // Pull every HH:MM out of free text, normalize and dedupe, e.g.
 // "10, 12:00 14.00" → ['10:00', '12:00', '14:00']. (Lone hours like "10" → 10:00)
 function parseSlotList(input) {
-  const tokens = input.match(/\d{1,2}(?::\d{2})?/g) || []
+  const tokens = input.match(/\d{1,2}(?:[:.]\d{2})?/g) || []
   const set = new Set()
   for (const tok of tokens) {
-    const [h, m = '00'] = tok.split(':')
+    const [h, m = '00'] = tok.split(/[:.]/)
     const hour = parseInt(h, 10)
     if (hour > 23 || parseInt(m, 10) > 59) continue
     set.add(`${String(hour).padStart(2, '0')}:${m.padStart(2, '0')}`)

@@ -15,6 +15,8 @@ import {
   isCalendarConfigured,
   createPendingEvent,
   getAvailability,
+  getCurated,
+  filterCurated,
   nowInTz,
   WINDOW_DAYS,
 } from './google-calendar.js'
@@ -117,9 +119,15 @@ app.get('/api/availability', async (req, res) => {
     return res.json({ busy: [], daysOff: [], curated })
   }
   try {
-    const data = await getAvailability(WINDOW_DAYS, tenant.calendarId, tenant.timezone)
+    // Master's per-date times come from their calendar (set via the bot);
+    // the hardcoded tenant list is only a fallback until they set them.
+    const [data, stored] = await Promise.all([
+      getAvailability(WINDOW_DAYS, tenant.calendarId, tenant.timezone),
+      getCurated(tenant.calendarId),
+    ])
+    const source = stored.length ? stored : curated
     res.set('Cache-Control', 'public, max-age=60')
-    return res.json({ ...data, curated })
+    return res.json({ ...data, curated: filterCurated(source, data, tenant.timezone) })
   } catch (err) {
     console.error('Availability failed:', err)
     return res.json({ busy: [], daysOff: [], curated })

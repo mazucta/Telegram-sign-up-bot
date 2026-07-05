@@ -202,15 +202,17 @@ export async function listBookings(days = WINDOW_DAYS, calendarId = DEFAULT_CAL(
 
 const SLOTS_CONFIG_DATE = '2000-01-01'
 
-async function findSlotsConfig(calendarId) {
+async function findConfigEvent(type, calendarId) {
   const res = await getCalendar().events.list({
     calendarId,
-    privateExtendedProperty: 'type=slotsconfig',
+    privateExtendedProperty: `type=${type}`,
     maxResults: 5,
     singleEvents: true,
   })
   return (res.data.items || [])[0] || null
 }
+
+const findSlotsConfig = (calendarId) => findConfigEvent('slotsconfig', calendarId)
 
 export async function getSlots(calendarId = DEFAULT_CAL()) {
   if (!isCalendarConfigured() || !calendarId) return TIME_SLOTS
@@ -240,6 +242,90 @@ export async function setSlots(slots, calendarId = DEFAULT_CAL()) {
   if (ev) await getCalendar().events.patch({ calendarId, eventId: ev.id, requestBody })
   else await getCalendar().events.insert({ calendarId, requestBody })
   return clean
+}
+
+// ---- curated per-date availability (per master) -------------------------------
+//
+// The exact {date, times[]} list the site's booking form shows. Stored like
+// slotsconfig — a marker event (type=availconfig) on a far-past date — but the
+// JSON lives in the event description (extendedProperties values cap at 1KB,
+// too small for a month of dates).
+
+export async function getCurated(calendarId = DEFAULT_CAL()) {
+  if (!isCalendarConfigured() || !calendarId) return []
+  try {
+    const ev = await findConfigEvent('availconfig', calendarId)
+    const list = JSON.parse(ev?.description || '[]')
+    return Array.isArray(list) ? list.filter((s) => s?.date && Array.isArray(s.times)) : []
+  } catch {
+    return []
+  }
+}
+
+// ponytail: per-calendar write queue — serializes read-modify-write on the one
+// availconfig event so rapid taps can't duplicate it or lose a toggle.
+const curatedQueues = new Map()
+function queueCurated(calendarId, fn) {
+  const next = (curatedQueues.get(calendarId) || Promise.resolve()).then(fn, fn)
+  curatedQueues.set(calendarId, next.catch(() => {}))
+  return next
+}
+
+/** Replaces the whole curated list (dates sorted, times deduped, past dates dropped). */
+export const saveCurated = (entries, calendarId = DEFAULT_CAL(), tz = DEFAULT_TZ) =>
+  queueCurated(calendarId, () => writeCurated(entries, calendarId, tz))
+
+async function writeCurated(entries, calendarId, tz) {
+  const today = localToday(tz)
+  const byDate = new Map()
+  for (const e of entries || []) {
+    if (!e?.date || e.date < today) continue
+    const times = [...new Set((e.times || []).map(normTime))].sort()
+    if (times.length) byDate.set(e.date, times)
+  }
+  const clean = [...byDate.keys()].sort().map((date) => ({ date, times: byDate.get(date) }))
+  const requestBody = {
+    summary: '🗓 Site availability (config)',
+    description: JSON.stringify(clean),
+    start: { date: SLOTS_CONFIG_DATE },
+    end: { date: addDays(SLOTS_CONFIG_DATE, 1) },
+    transparency: 'transparent',
+    extendedProperties: { private: { type: 'availconfig' } },
+  }
+  const ev = await findConfigEvent('availconfig', calendarId)
+  if (ev) await getCalendar().events.patch({ calendarId, eventId: ev.id, requestBody })
+  else await getCalendar().events.insert({ calendarId, requestBody })
+  return clean
+}
+
+/** Toggles one time on one date; returns the date's new times. */
+export const toggleCuratedTime = (date, time, calendarId = DEFAULT_CAL(), tz = DEFAULT_TZ) =>
+  queueCurated(calendarId, async () => {
+    const list = await getCurated(calendarId)
+    const t = normTime(time)
+    const day = list.find((s) => s.date === date)
+    if (day && day.times.includes(t)) day.times = day.times.filter((x) => x !== t)
+    else if (day) day.times.push(t)
+    else list.push({ date, times: [t] })
+    const saved = await writeCurated(list, calendarId, tz)
+    return saved.find((s) => s.date === date)?.times || []
+  })
+
+/** Hides curated slots the client can no longer book: taken times, days off, the past.
+ *  A date whose times are all taken stays in the list (empty) so the sites remain in
+ *  curated mode instead of silently reverting to open booking. */
+export function filterCurated(source, { busy = [], daysOff = [] } = {}, tz = DEFAULT_TZ) {
+  const busySet = new Set(busy)
+  const offSet = new Set(daysOff)
+  const { date: today, hour } = nowInTz(tz)
+  return (source || [])
+    .map((s) => ({
+      date: s.date,
+      times: (s.times || []).filter(
+        (t) => !busySet.has(`${s.date} ${t}`) && !(s.date === today && parseInt(t, 10) <= hour)
+      ),
+    }))
+    .filter((s) => s.date >= today && !offSet.has(s.date))
 }
 
 // ---- availability (blocks, days off, busy slots) ----------------------------
