@@ -28,6 +28,7 @@ export const TENANTS = [
     ],
     calendarId: process.env.GOOGLE_CALENDAR_ID || 'aliona.lomaka121212@gmail.com',
     timezone: process.env.STUDIO_TIMEZONE || 'Europe/Berlin',
+    instagram: 'lomaka_alyona', // review-ask button in the bot
     // Sites allowed to call the API for this tenant ('*' = any)
     allowedOrigins: ['*'],
     // Curated free slots (single source: the site form AND the story image read
@@ -55,6 +56,7 @@ export const TENANTS = [
     adminIds: ['653377236'],
     calendarId: 'ulianalom15@gmail.com',
     timezone: 'Europe/Tallinn',
+    instagram: 'lomaka.lashes', // review-ask button in the bot
     allowedOrigins: ['*'],
   },
 

@@ -8,9 +8,14 @@
 import {
   isCalendarConfigured,
   confirmEvent,
+  createPendingEvent,
   deleteEvent,
+  getClientBookings,
   getEvent,
   listBookings,
+  nowInTz,
+  setPrivateProps,
+  SLOT_HOURS,
   getAvailability,
   getDayStatus,
   toggleBlock,
@@ -21,6 +26,7 @@ import {
   setSlots,
   getCurated,
   saveCurated,
+  setClientChat,
   toggleCuratedTime,
   filterCurated,
   addDays,
@@ -29,7 +35,7 @@ import {
   localToday,
 } from './google-calendar.js'
 import { renderScheduleImage } from './story.js'
-import { tenantByChatId, isTenantAdmin } from './tenants.js'
+import { TENANTS, getTenant, tenantByChatId, isTenantAdmin } from './tenants.js'
 
 const TOKEN = () => process.env.TELEGRAM_BOT_TOKEN
 
@@ -38,6 +44,9 @@ const awaitingTime = new Map()
 const pendingStory = new Map()
 const awaitingSlots = new Map()
 const awaitingMonth = new Map()
+// ponytail: in-memory rebook offers (client chat id → cancelled booking data);
+// lost on restart — the client just books on the site instead.
+const rebookCtx = new Map()
 
 export function isTelegramConfigured() {
   return Boolean(process.env.TELEGRAM_BOT_TOKEN)
@@ -65,6 +74,38 @@ const editMessageReplyMarkup = (chatId, messageId, reply_markup) =>
 
 const answerCallback = (id, text = '') =>
   tg('answerCallbackQuery', { callback_query_id: id, text })
+
+// Push to a subscribed client; never let it break the master's flow
+// (client may have blocked the bot, network may hiccup).
+const notifyClient = (chatId, text, extra = {}) => {
+  if (chatId) sendMessage(chatId, text, extra).catch((err) => console.error('notifyClient failed:', err))
+}
+
+// Client-facing date label (clients get English texts)
+const dayLabelEn = (dateStr) =>
+  new Date(`${dateStr}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
+
+// "Add to calendar" link for the client's confirmation push
+function gcalLink({ service, date, time }, tz) {
+  if (!date || !time) return ''
+  const [h, m] = time.split(':').map(Number)
+  const fmt = (hh, mm) => `${date.replace(/-/g, '')}T${String(hh).padStart(2, '0')}${String(mm).padStart(2, '0')}00`
+  return (
+    `https://calendar.google.com/calendar/render?action=TEMPLATE` +
+    `&text=${encodeURIComponent(service || 'Beauty appointment')}` +
+    `&dates=${fmt(h, m)}/${fmt(Math.min(h + SLOT_HOURS, 23), m)}` +
+    `&ctz=${encodeURIComponent(tz || 'Europe/Berlin')}`
+  )
+}
+
+// Bot username for the client deep link (t.me/<bot>?start=…), cached after getMe.
+let botUsername = ''
+export async function getBotUsername() {
+  if (!botUsername && isTelegramConfigured()) {
+    botUsername = (await tg('getMe', {})).result?.username || ''
+  }
+  return botUsername
+}
 
 async function sendPhotoBuffer(chatId, buffer, caption) {
   const form = new FormData()
@@ -179,10 +220,14 @@ export async function handleUpdate(update) {
 
 async function onCallback(cq) {
   const chatId = cq.message?.chat?.id
+
+  // Client-side buttons (rebook offers) arrive from non-tenant chats
+  if ((cq.data || '').startsWith('cl|')) return await onClientRebook(cq)
+
   const tenant = tenantByChatId(chatId)
   if (!tenant || !isTenantAdmin(tenant, cq.from?.id)) return answerCallback(cq.id)
 
-  const ctx = { chatId, calendarId: tenant.calendarId, tz: tenant.timezone, availability: tenant.availability || [] }
+  const ctx = { chatId, tenant, calendarId: tenant.calendarId, tz: tenant.timezone, availability: tenant.availability || [] }
   const data = cq.data || ''
   const messageId = cq.message?.message_id
 
@@ -193,7 +238,27 @@ async function onCallback(cq) {
   const originalText = cq.message?.text || ''
 
   if (action === 'd') {
-    if (hasCal) await deleteEvent(eventId, ctx.calendarId)
+    if (hasCal) {
+      const p = (await getEvent(eventId, ctx.calendarId).catch(() => null))?.extendedProperties?.private
+      if (p?.clientChatId) {
+        const info = {
+          clientChatId: p.clientChatId,
+          clientName: p.clientName,
+          method: p.method,
+          contact: p.contact,
+          service: p.service,
+          date: p.slotDate,
+          time: p.slotTime,
+        }
+        const kb = await rebookKeyboard(ctx.tenant, info)
+        notifyClient(
+          p.clientChatId,
+          cancelTextForClient(info) + (kb ? '\n\nOr pick a new time right here:' : ''),
+          kb ? { reply_markup: kb } : {}
+        )
+      }
+      await deleteEvent(eventId, ctx.calendarId)
+    }
     await editMessageText(chatId, messageId, `${originalText}\n\n❌ <b>Declined</b>`, {
       reply_markup: { inline_keyboard: [] },
     })
@@ -226,9 +291,40 @@ async function onMessage(msg) {
   const text = (msg.text || '').trim()
   const cmd = text.split(/[\s@]/)[0]
 
-  // Unknown chat: help onboarding by revealing the chat id
+  // Client tapped the site's "get notifications" deep link:
+  // /start <tenantId>_<eventId> → remember their chat on that booking.
+  if (cmd === '/start') {
+    const payload = text.split(/\s+/)[1] || ''
+    const sep = payload.indexOf('_')
+    if (sep > 0) {
+      const t = getTenant(payload.slice(0, sep))
+      if (t?.calendarId && isCalendarConfigured()) {
+        try {
+          await setClientChat(payload.slice(sep + 1), chatId, t.calendarId)
+          return sendMessage(
+            chatId,
+            "🔔 Done! I'll message you here if your appointment is confirmed, rescheduled or cancelled."
+          )
+        } catch {
+          return sendMessage(chatId, '⚠️ This booking was not found — it may have been cancelled already.')
+        }
+      }
+    }
+  }
+
+  // Unknown chat: a subscribed client sees their bookings; anyone else gets
+  // the onboarding hint with their chat id.
   if (!tenant) {
     if (cmd === '/start' || cmd === '/menu') {
+      const mine = await clientBookingsAcrossTenants(chatId)
+      if (mine.length) {
+        const lines = mine.map(
+          (b) =>
+            `• ${dayLabelEn(b.date)} ${b.time} — ${b.service || 'booking'} (${b.master})` +
+            (b.status === 'pending' ? ' 🟡 awaiting confirmation' : ' ✅ confirmed')
+        )
+        return sendMessage(chatId, `📒 <b>Your appointments</b>\n\n${lines.join('\n')}`)
+      }
       await sendMessage(
         chatId,
         `👋 Этот чат пока не подключён.\nВаш ID: <code>${chatId}</code>\nПередайте его администратору для подключения.`
@@ -238,7 +334,7 @@ async function onMessage(msg) {
   }
 
   if (!isTenantAdmin(tenant, msg.from?.id)) return
-  const ctx = { chatId, calendarId: tenant.calendarId, tz: tenant.timezone, availability: tenant.availability || [] }
+  const ctx = { chatId, tenant, calendarId: tenant.calendarId, tz: tenant.timezone, availability: tenant.availability || [] }
 
   // Photo while waiting for a story background → generate the image
   if (msg.photo?.length) {
@@ -330,6 +426,7 @@ async function finalizeConfirm({ ctx, eventId, messageId, originalText = '', dat
       service: priv.service || '',
       method: priv.method || 'whatsapp',
       contact: priv.contact || '',
+      clientChatId: priv.clientChatId || '',
       date: when.date,
       time: when.time,
     }
@@ -345,6 +442,15 @@ async function finalizeConfirm({ ctx, eventId, messageId, originalText = '', dat
   if (messageId) await editMessageText(ctx.chatId, messageId, fullText, { reply_markup })
   else await sendMessage(ctx.chatId, fullText, { reply_markup })
   if (callbackId) await answerCallback(callbackId, 'Confirmed')
+
+  const cal = gcalLink(info, ctx.tz)
+  notifyClient(
+    info.clientChatId,
+    rescheduled
+      ? `Hello, ${info.clientName || ''}! Your appointment was rescheduled: ${info.service || 'booking'}, now ${info.date} at ${info.time}. If the new time doesn't work, just message me. 💛`
+      : confirmationTextForClient(info),
+    cal ? { reply_markup: { inline_keyboard: [[{ text: '📅 Add to calendar', url: cal }]] } } : {}
+  )
 
   if (rescheduled) {
     const whenStr = info.date ? `${dayLabel(info.date)}${info.time ? ' ' + info.time : ''}` : time || ''
@@ -508,6 +614,56 @@ async function scheduleSummary(calendarId, tz) {
 
 const cancelTextForClient = ({ clientName, service, date, time }) =>
   `Hello, ${clientName || ''}! Unfortunately I have to cancel your appointment (${service || 'booking'}, ${date} at ${time}). Please message me to find a new time. Sorry for the inconvenience! 💛`
+
+// After a cancel, offer the client the master's nearest free slots so they can
+// rebook right from the push. Returns a reply_markup or null.
+async function rebookKeyboard(tenant, booking) {
+  if (!tenant || !booking?.clientChatId) return null
+  try {
+    const ctx = { calendarId: tenant.calendarId, tz: tenant.timezone, availability: tenant.availability || [] }
+    const slots = (await curatedFor(ctx))
+      .flatMap((s) => (s.times || []).map((t) => ({ date: s.date, time: t })))
+      .slice(0, 6)
+    if (!slots.length) return null
+    rebookCtx.set(String(booking.clientChatId), {
+      tenantId: tenant.id,
+      name: booking.clientName || '',
+      method: booking.method || 'whatsapp',
+      contact: booking.contact || '',
+      service: booking.service || '',
+    })
+    return {
+      inline_keyboard: slots.map((s) => [
+        { text: `📅 ${dayLabelEn(s.date)} · ${s.time}`, callback_data: `cl|${s.date}|${s.time}` },
+      ]),
+    }
+  } catch {
+    return null
+  }
+}
+
+// Client tapped a rebook slot in the cancel push
+async function onClientRebook(cq) {
+  const chatId = cq.message?.chat?.id
+  const [, date, time] = (cq.data || '').split('|')
+  const saved = rebookCtx.get(String(chatId))
+  const tenant = saved && getTenant(saved.tenantId)
+  if (!tenant?.calendarId) {
+    await editMessageReplyMarkup(chatId, cq.message?.message_id, { inline_keyboard: [] })
+    return answerCallback(cq.id, 'This offer has expired — please book on the site.')
+  }
+  rebookCtx.delete(String(chatId))
+  const booking = { ...saved, date, time, message: 'Rebooked via bot after cancellation' }
+  const event = await createPendingEvent(booking, tenant.calendarId, tenant.timezone)
+  await setPrivateProps(event.id, { clientChatId: String(chatId) }, tenant.calendarId).catch(() => {})
+  await sendBookingToMaster(booking, event, tenant)
+  await editMessageReplyMarkup(chatId, cq.message?.message_id, { inline_keyboard: [] })
+  await sendMessage(
+    chatId,
+    `✅ Request sent: ${booking.service || 'booking'}, ${dayLabelEn(date)} at ${time}. You'll get a message here once it's confirmed.`
+  )
+  return answerCallback(cq.id, 'Request sent')
+}
 
 function bookingDetailText(b) {
   const channel =
@@ -768,7 +924,15 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
     }
 
     if (action === 'bxy') {
-      if (booking) await deleteEvent(id, cid)
+      if (booking) {
+        await deleteEvent(id, cid)
+        const kb = await rebookKeyboard(ctx.tenant, booking)
+        notifyClient(
+          booking.clientChatId,
+          cancelTextForClient(booking) + (kb ? '\n\nOr pick a new time right here:' : ''),
+          kb ? { reply_markup: kb } : {}
+        )
+      }
       const btn = booking ? messageClientButton(booking.method, booking.contact, cancelTextForClient(booking)) : null
       const summary =
         '❌ <b>Запись отменена</b>' +
@@ -825,6 +989,83 @@ function parseMonthList(input, tz) {
     entries.push({ date, times })
   }
   return entries
+}
+
+// ===========================================================================
+// Periodic tasks (index.js runs this every 15 min): 24h client reminders,
+// post-visit review asks, morning summary for each master.
+// ===========================================================================
+
+// ponytail: in-memory "summary sent" day-stamps — a restart between 8:00 and
+// 8:59 may repeat one morning summary; harmless for a handful of tenants.
+const summarySent = new Map()
+
+async function clientBookingsAcrossTenants(chatId) {
+  const out = []
+  for (const t of TENANTS) {
+    if (!t.calendarId) continue
+    const list = await getClientBookings(chatId, t.calendarId).catch(() => [])
+    for (const b of list) out.push({ ...b, master: t.name })
+  }
+  return out.sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`))
+}
+
+export async function runPeriodicTasks() {
+  if (!isTelegramConfigured() || !isCalendarConfigured()) return
+  for (const tenant of TENANTS) {
+    if (!tenant.calendarId) continue
+    try {
+      await tenantPeriodic(tenant)
+    } catch (err) {
+      console.error(`periodic [${tenant.id}]:`, err)
+    }
+  }
+}
+
+async function tenantPeriodic(tenant) {
+  const bookings = await listBookings(WINDOW_DAYS, tenant.calendarId, tenant.timezone)
+  const now = Date.now()
+
+  for (const b of bookings) {
+    if (!b.clientChatId) continue
+
+    // 24h reminder (flag first so a crash can't double-send)
+    const untilStart = b.startISO ? Date.parse(b.startISO) - now : -1
+    if (!b.reminded && untilStart > 0 && untilStart <= 24 * 3600e3) {
+      await setPrivateProps(b.id, { reminded: '1' }, tenant.calendarId)
+      notifyClient(
+        b.clientChatId,
+        `⏰ Reminder: ${b.service || 'your appointment'} ${dayLabelEn(b.date)} at ${b.time}. See you soon! 💛`
+      )
+    }
+
+    // Review ask 2–6h after a confirmed visit ended
+    const sinceEnd = b.endISO ? now - Date.parse(b.endISO) : -1
+    if (!b.reviewAsked && b.status === 'confirmed' && sinceEnd > 2 * 3600e3 && sinceEnd < 6 * 3600e3) {
+      await setPrivateProps(b.id, { reviewAsked: '1' }, tenant.calendarId)
+      const ig = tenant.instagram
+        ? { reply_markup: { inline_keyboard: [[{ text: '📷 Instagram', url: `https://instagram.com/${tenant.instagram}` }]] } }
+        : {}
+      notifyClient(
+        b.clientChatId,
+        `Hello, ${b.clientName || ''}! Hope you love the result ✨ A short review would mean a lot — just drop me a line on Instagram. Thank you! 💛`,
+        ig
+      )
+    }
+  }
+
+  // Morning summary to the master at 8:00 local time
+  const { date: today, hour } = nowInTz(tenant.timezone)
+  if (hour === 8 && summarySent.get(tenant.id) !== today && tenant.telegramChatId) {
+    summarySent.set(tenant.id, today)
+    const todays = bookings.filter((b) => b.date === today)
+    if (todays.length) {
+      const lines = todays.map(
+        (b) => `• ${b.time} — ${b.clientName || '—'} (${b.service || '—'})${b.status === 'pending' ? ' 🟡' : ''}`
+      )
+      await sendMessage(tenant.telegramChatId, `☀️ <b>Записи на сегодня: ${todays.length}</b>\n\n${lines.join('\n')}`)
+    }
+  }
 }
 
 // Pull every HH:MM out of free text, normalize and dedupe, e.g.

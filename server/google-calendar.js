@@ -21,7 +21,7 @@ const DEFAULT_CAL = () => process.env.GOOGLE_CALENDAR_ID
 
 // Bookable hours (shared by bot, website and story). Every two hours, 10:00–20:00.
 export const TIME_SLOTS = ['10:00', '12:00', '14:00', '16:00', '18:00', '20:00']
-const SLOT_HOURS = 2
+export const SLOT_HOURS = 2
 
 // How far ahead bookings are offered (site availability, bot menu, story).
 export const WINDOW_DAYS = 30
@@ -163,6 +163,48 @@ export async function deleteEvent(eventId, calendarId = DEFAULT_CAL()) {
   await getCalendar().events.delete({ calendarId, eventId })
 }
 
+// Merge keys into an event's private extendedProperties (clientChatId,
+// reminded, reviewAsked, …) without touching the rest.
+export async function setPrivateProps(eventId, props, calendarId = DEFAULT_CAL()) {
+  const ev = await getEvent(eventId, calendarId)
+  const priv = { ...(ev.extendedProperties?.private || {}), ...props }
+  await getCalendar().events.patch({
+    calendarId,
+    eventId,
+    requestBody: { extendedProperties: { private: priv } },
+  })
+}
+
+// Remember the client's Telegram chat so the bot can push updates (cancel /
+// reschedule / confirm) about this booking. Set when the client taps the
+// "get notifications" deep link after booking on the site.
+export const setClientChat = (eventId, chatId, calendarId = DEFAULT_CAL()) =>
+  setPrivateProps(eventId, { clientChatId: String(chatId) }, calendarId)
+
+// A client's own upcoming bookings across one master's calendar, matched by
+// the Telegram chat they subscribed with.
+export async function getClientBookings(chatId, calendarId = DEFAULT_CAL()) {
+  if (!isCalendarConfigured() || !calendarId) return []
+  const res = await getCalendar().events.list({
+    calendarId,
+    privateExtendedProperty: `clientChatId=${chatId}`,
+    timeMin: new Date().toISOString(),
+    singleEvents: true,
+    orderBy: 'startTime',
+    maxResults: 20,
+  })
+  return (res.data.items || []).map((ev) => {
+    const p = ev.extendedProperties?.private || {}
+    return {
+      id: ev.id,
+      status: p.status || 'confirmed',
+      service: p.service || '',
+      date: p.slotDate || (ev.start?.dateTime || '').slice(0, 10),
+      time: p.slotTime || '',
+    }
+  })
+}
+
 // Active client bookings (pending + confirmed) in the upcoming window, sorted by
 // time. Blocks and days-off are excluded — this is only real client records, so
 // the master can reschedule or cancel them from the menu.
@@ -186,8 +228,13 @@ export async function listBookings(days = WINDOW_DAYS, calendarId = DEFAULT_CAL(
       service: p.service || '',
       method: p.method || 'whatsapp',
       contact: p.contact || '',
+      clientChatId: p.clientChatId || '',
+      reminded: p.reminded === '1',
+      reviewAsked: p.reviewAsked === '1',
       date: p.slotDate || (ev.start?.dateTime || '').slice(0, 10),
       time: p.slotTime || '',
+      startISO: ev.start?.dateTime || '',
+      endISO: ev.end?.dateTime || '',
     })
   }
   return bookings.sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`))
@@ -278,8 +325,9 @@ export const saveCurated = (entries, calendarId = DEFAULT_CAL(), tz = DEFAULT_TZ
 async function writeCurated(entries, calendarId, tz) {
   const today = localToday(tz)
   const byDate = new Map()
+  const horizon = addDays(today, 366) // typo'd years like "22.08.28" → 2028 get dropped
   for (const e of entries || []) {
-    if (!e?.date || e.date < today) continue
+    if (!e?.date || e.date < today || e.date > horizon) continue
     const times = [...new Set((e.times || []).map(normTime))].sort()
     if (times.length) byDate.set(e.date, times)
   }

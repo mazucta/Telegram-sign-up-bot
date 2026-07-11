@@ -20,7 +20,14 @@ import {
   nowInTz,
   WINDOW_DAYS,
 } from './google-calendar.js'
-import { isTelegramConfigured, sendBookingToMaster, handleUpdate, setupWebhook } from './telegram.js'
+import {
+  isTelegramConfigured,
+  sendBookingToMaster,
+  handleUpdate,
+  setupWebhook,
+  getBotUsername,
+  runPeriodicTasks,
+} from './telegram.js'
 import { TENANTS, getTenant } from './tenants.js'
 
 const app = express()
@@ -104,7 +111,14 @@ app.post('/api/booking', async (req, res) => {
     if (isTelegramConfigured() && tenant.telegramChatId) {
       await sendBookingToMaster(booking, event, tenant)
     }
-    return res.json({ ok: true })
+    // Deep link the site shows after booking: client taps it, presses Start,
+    // and the bot can then push confirm/reschedule/cancel updates to them.
+    let notifyUrl = ''
+    if (event?.id) {
+      const bot = await getBotUsername().catch(() => '')
+      if (bot) notifyUrl = `https://t.me/${bot}?start=${tenant.id}_${event.id}`
+    }
+    return res.json({ ok: true, notifyUrl })
   } catch (err) {
     console.error('Booking handling failed:', err)
     return res.json({ ok: true, warning: 'Saved with limited processing.' })
@@ -154,4 +168,7 @@ app.listen(PORT, async () => {
       console.error('Webhook setup failed:', err)
     }
   }
+  // Client reminders / review asks / morning summaries (paid instance — always awake)
+  runPeriodicTasks()
+  setInterval(runPeriodicTasks, 15 * 60e3)
 })
