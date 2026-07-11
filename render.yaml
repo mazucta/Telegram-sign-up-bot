@@ -4,7 +4,7 @@ services:
   - type: web
     name: booking-hub
     runtime: node
-    plan: free
+    plan: starter # always-on: powers the 15-min reminder/summary loop
     buildCommand: npm install
     startCommand: npm start
     autoDeploy: true
