@@ -16,9 +16,10 @@ import {
   createPendingEvent,
   getAvailability,
   getCurated,
+  getDayStatus,
   filterCurated,
   nowInTz,
-  WINDOW_DAYS,
+  SCAN_DAYS,
 } from './google-calendar.js'
 import {
   isTelegramConfigured,
@@ -101,28 +102,51 @@ app.post('/api/booking', async (req, res) => {
 
   const booking = { name, contact, method, service, date, time, message }
   console.log(`📩 Booking [${tenant.id}]:`, booking)
-  recordBooking(key)
 
-  try {
-    let event = null
-    if (isCalendarConfigured() && tenant.calendarId) {
-      event = await createPendingEvent(booking, tenant.calendarId, tenant.timezone)
-    }
-    if (isTelegramConfigured() && tenant.telegramChatId) {
-      await sendBookingToMaster(booking, event, tenant)
-    }
-    // Deep link the site shows after booking: client taps it, presses Start,
-    // and the bot can then push confirm/reschedule/cancel updates to them.
-    let notifyUrl = ''
-    if (event?.id) {
-      const bot = await getBotUsername().catch(() => '')
-      if (bot) notifyUrl = `https://t.me/${bot}?start=${tenant.id}_${event.id}`
-    }
-    return res.json({ ok: true, notifyUrl })
-  } catch (err) {
-    console.error('Booking handling failed:', err)
-    return res.json({ ok: true, warning: 'Saved with limited processing.' })
+  const useCalendar = isCalendarConfigured() && tenant.calendarId
+
+  // Reject slots already taken / blocked / on a day off (no silent double-booking)
+  if (useCalendar && date && time) {
+    const { dayoff, status } = await getDayStatus(date, tenant.calendarId).catch(() => ({ dayoff: false, status: {} }))
+    const t = time.length === 4 ? `0${time}` : time
+    if (dayoff || status[t]) return res.status(409).json({ ok: false, error: 'slot_taken' })
   }
+
+  // Calendar and Telegram are independent: one failing must not lose the other.
+  let event = null
+  let calendarFailed = false
+  if (useCalendar) {
+    try {
+      event = await createPendingEvent(booking, tenant.calendarId, tenant.timezone)
+    } catch (err) {
+      calendarFailed = true
+      console.error(`Calendar insert failed [${tenant.id}]:`, err)
+    }
+  }
+  let masterNotified = false
+  if (isTelegramConfigured() && tenant.telegramChatId) {
+    const sent = await sendBookingToMaster(booking, event, tenant).catch((err) => {
+      console.error(`Telegram send failed [${tenant.id}]:`, err)
+      return null
+    })
+    masterNotified = Boolean(sent?.ok)
+  }
+
+  // Nothing recorded anywhere → tell the client the truth so the booking
+  // isn't silently lost (the site shows an error and they can retry/DM).
+  if (!event && !masterNotified) {
+    return res.status(502).json({ ok: false, error: calendarFailed ? 'calendar_failed' : 'not_configured' })
+  }
+
+  recordBooking(key)
+  // Deep link the site shows after booking: client taps it, presses Start,
+  // and the bot can then push confirm/reschedule/cancel updates to them.
+  let notifyUrl = ''
+  if (event?.id) {
+    const bot = await getBotUsername().catch(() => '')
+    if (bot) notifyUrl = `https://t.me/${bot}?start=${tenant.id}_${event.id}`
+  }
+  return res.json({ ok: true, notifyUrl })
 })
 
 app.get('/api/availability', async (req, res) => {
@@ -136,7 +160,7 @@ app.get('/api/availability', async (req, res) => {
     // Master's per-date times come from their calendar (set via the bot);
     // the hardcoded tenant list is only a fallback until they set them.
     const [data, stored] = await Promise.all([
-      getAvailability(WINDOW_DAYS, tenant.calendarId, tenant.timezone),
+      getAvailability(SCAN_DAYS, tenant.calendarId, tenant.timezone),
       getCurated(tenant.calendarId),
     ])
     const source = stored.length ? stored : curated

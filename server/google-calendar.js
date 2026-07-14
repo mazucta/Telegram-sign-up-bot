@@ -26,6 +26,11 @@ export const SLOT_HOURS = 2
 // How far ahead bookings are offered (site availability, bot menu, story).
 export const WINDOW_DAYS = 30
 
+// Busy/day-off scan horizon for curated filtering: masters set curated dates
+// months ahead, so taken slots must be detected past the 30-day UI window.
+// ponytail: capped by listWindow's maxResults=250; raise both if a calendar outgrows it.
+export const SCAN_DAYS = 92
+
 // Current { date: 'YYYY-MM-DD', hour: 0-23 } in a given IANA timezone.
 export function nowInTz(tz = DEFAULT_TZ) {
   const parts = new Intl.DateTimeFormat('en-CA', {
@@ -366,6 +371,7 @@ export function filterCurated(source, { busy = [], daysOff = [] } = {}, tz = DEF
   const busySet = new Set(busy)
   const offSet = new Set(daysOff)
   const { date: today, hour } = nowInTz(tz)
+  const horizon = addDays(today, 366) // hides stale typo'd years (e.g. 2028) saved before the write-guard
   return (source || [])
     .map((s) => ({
       date: s.date,
@@ -373,7 +379,7 @@ export function filterCurated(source, { busy = [], daysOff = [] } = {}, tz = DEF
         (t) => !busySet.has(`${s.date} ${t}`) && !(s.date === today && parseInt(t, 10) <= hour)
       ),
     }))
-    .filter((s) => s.date >= today && !offSet.has(s.date))
+    .filter((s) => s.date >= today && s.date <= horizon && !offSet.has(s.date))
 }
 
 // ---- availability (blocks, days off, busy slots) ----------------------------

@@ -32,6 +32,7 @@ import {
   addDays,
   TIME_SLOTS,
   WINDOW_DAYS,
+  SCAN_DAYS,
   localToday,
 } from './google-calendar.js'
 import { renderScheduleImage } from './story.js'
@@ -146,14 +147,15 @@ export async function setupWebhook(publicUrl, secret) {
 
 // ---- helpers ----------------------------------------------------------------
 
+// Slot of an event, studio-timezone exact: our events carry slotDate/slotTime in
+// extendedProperties; parsing start.dateTime with getHours() would give the
+// SERVER's timezone (UTC on Render) and show clients a shifted time.
 function fmtWhen(event) {
+  const p = event?.extendedProperties?.private || {}
+  if (p.slotDate && p.slotTime) return { date: p.slotDate, time: p.slotTime }
   const iso = event?.start?.dateTime || event?.start?.date
   if (!iso) return { date: '', time: '' }
-  const d = new Date(iso)
-  return {
-    date: d.toISOString().slice(0, 10),
-    time: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`,
-  }
+  return { date: iso.slice(0, 10), time: iso.length > 10 ? iso.slice(11, 16) : '' }
 }
 
 function messageClientButton(method, contact, text) {
@@ -215,6 +217,12 @@ export async function handleUpdate(update) {
     if (update.message) return await onMessage(update.message)
   } catch (err) {
     console.error('handleUpdate error:', err)
+    // Never fail silently: stop the button spinner / tell the chat it didn't work.
+    const cq = update.callback_query
+    if (cq) await answerCallback(cq.id, '⚠️ Ошибка · Error — try again').catch(() => {})
+    else if (update.message?.chat?.id) {
+      await sendMessage(update.message.chat.id, '⚠️ Не получилось выполнить действие. Попробуй ещё раз.').catch(() => {})
+    }
   }
 }
 
@@ -240,6 +248,10 @@ async function onCallback(cq) {
   if (action === 'd') {
     if (hasCal) {
       const p = (await getEvent(eventId, ctx.calendarId).catch(() => null))?.extendedProperties?.private
+      // Delete first — the client must only hear "cancelled" once it's true.
+      await deleteEvent(eventId, ctx.calendarId).catch((err) => {
+        if (err?.code !== 404 && err?.code !== 410) throw err // already gone is fine
+      })
       if (p?.clientChatId) {
         const info = {
           clientChatId: p.clientChatId,
@@ -257,7 +269,6 @@ async function onCallback(cq) {
           kb ? { reply_markup: kb } : {}
         )
       }
-      await deleteEvent(eventId, ctx.calendarId)
     }
     await editMessageText(chatId, messageId, `${originalText}\n\n❌ <b>Declined</b>`, {
       reply_markup: { inline_keyboard: [] },
@@ -491,7 +502,7 @@ function dayLabel(dateStr) {
 async function curatedFor(ctx) {
   const [stored, av] = await Promise.all([
     getCurated(ctx.calendarId),
-    getAvailability(WINDOW_DAYS, ctx.calendarId, ctx.tz),
+    getAvailability(SCAN_DAYS, ctx.calendarId, ctx.tz),
   ])
   return filterCurated(stored.length ? stored : ctx.availability, av, ctx.tz)
 }
@@ -952,22 +963,37 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
   return answerCallback(callbackId)
 }
 
-function parseTime(input) {
+export function parseTime(input) {
   const s = input.trim()
   // День/Месяц/Год + время, разделители / . - (например 25/06/2026 14:00)
   let m = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})[ T](\d{1,2}:\d{2})$/)
   if (m) {
     const [, d, mo, y, t] = m
-    return { date: `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`, time: pad(t) }
+    const date = `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`
+    const time = pad(t)
+    // Impossible dates/times (31/02, 25:70) would silently die at Google —
+    // reject here so the master gets the "couldn't parse" reply instead.
+    if (!time || !isRealDate(date)) return null
+    return { date, time }
   }
   // Только время — дата записи сохраняется
   m = s.match(/^(\d{1,2}:\d{2})$/)
-  if (m) return { date: '', time: pad(m[1]) }
+  if (m) {
+    const time = pad(m[1])
+    return time ? { date: '', time } : null
+  }
   return null
+}
+
+// V8 rolls impossible days over (Feb 31 → Mar 3) instead of NaN — roundtrip to detect
+const isRealDate = (iso) => {
+  const d = new Date(`${iso}T00:00:00Z`)
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === iso
 }
 
 const pad = (hhmm) => {
   const [h, m] = hhmm.split(':')
+  if (parseInt(h, 10) > 23 || parseInt(m, 10) > 59) return null
   return `${h.padStart(2, '0')}:${m}`
 }
 
@@ -986,6 +1012,7 @@ function parseMonthList(input, tz) {
     const year = y ? (y.length === 2 ? `20${y}` : y) : today.slice(0, 4)
     let date = `${year}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`
     if (!y && date < today) date = `${Number(year) + 1}${date.slice(4)}`
+    if (!isRealDate(date)) continue
     entries.push({ date, times })
   }
   return entries
