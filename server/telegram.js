@@ -691,7 +691,7 @@ function bookingDetailText(b) {
 }
 
 async function buildBookingsKeyboard(calendarId, tz) {
-  const list = await listBookings(WINDOW_DAYS, calendarId, tz)
+  const list = await listBookings(calendarId, tz)
   const rows = list.map((b) => [
     {
       text: `${b.status === 'pending' ? '🟡' : '✅'} ${dayLabel(b.date)} ${b.time} · ${b.clientName || '—'}`,
@@ -884,7 +884,7 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
   // ---- client bookings: open one, reschedule or cancel it -------------------
   if (action === 'bk' || action === 'br' || action === 'bx' || action === 'bxy') {
     const id = parts[1]
-    const booking = (await listBookings(WINDOW_DAYS, cid, ctx.tz)).find((b) => b.id === id)
+    const booking = (await listBookings(cid, ctx.tz)).find((b) => b.id === id)
 
     // The record is gone (already cancelled elsewhere) — fall back to the list.
     if (!booking && action !== 'bxy') {
@@ -1050,7 +1050,7 @@ export async function runPeriodicTasks() {
 }
 
 async function tenantPeriodic(tenant) {
-  const bookings = await listBookings(WINDOW_DAYS, tenant.calendarId, tenant.timezone)
+  const bookings = await listBookings(tenant.calendarId, tenant.timezone)
   const now = Date.now()
 
   for (const b of bookings) {

@@ -103,7 +103,7 @@ async function listWindow(fromISO, toISO, calendarId) {
   const res = await getCalendar().events.list({
     calendarId,
     timeMin: fromISO,
-    timeMax: toISO,
+    timeMax: toISO || undefined, // no upper bound: all upcoming
     singleEvents: true,
     orderBy: 'startTime',
     maxResults: 250,
@@ -210,17 +210,13 @@ export async function getClientBookings(chatId, calendarId = DEFAULT_CAL()) {
   })
 }
 
-// Active client bookings (pending + confirmed) in the upcoming window, sorted by
-// time. Blocks and days-off are excluded — this is only real client records, so
-// the master can reschedule or cancel them from the menu.
-export async function listBookings(days = WINDOW_DAYS, calendarId = DEFAULT_CAL(), tz = DEFAULT_TZ) {
+// ALL active client bookings (pending + confirmed) from 6h ago onward, however
+// far in the future — a booking the menu can't list is one the master can't
+// cancel. Blocks and days-off are excluded — this is only real client records.
+export async function listBookings(calendarId = DEFAULT_CAL(), tz = DEFAULT_TZ) {
   if (!isCalendarConfigured() || !calendarId) return []
   const now = Date.now()
-  const items = await listWindow(
-    new Date(now - 6 * 3600e3).toISOString(),
-    new Date(now + (days + 1) * 24 * 3600e3).toISOString(),
-    calendarId
-  )
+  const items = await listWindow(new Date(now - 6 * 3600e3).toISOString(), null, calendarId)
   const bookings = []
   for (const ev of items) {
     const p = ev.extendedProperties?.private || {}
