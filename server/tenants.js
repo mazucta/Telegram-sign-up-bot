@@ -53,7 +53,7 @@ export const TENANTS = [
     name: 'Uliana Lomaka',
     telegramChatId: '-1003902963683', // group with Uliana + the bot
     // Personal Telegram user ids allowed to press Confirm/Decline & use /menu.
-    adminIds: ['653377236'],
+    adminIds: ['653377236', '5609757241'],
     calendarId: 'ulianalom15@gmail.com',
     timezone: 'Europe/Tallinn',
     instagram: 'lomaka.lashes', // review-ask button in the bot
