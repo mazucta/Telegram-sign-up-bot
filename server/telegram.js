@@ -36,7 +36,7 @@ import {
   localToday,
 } from './google-calendar.js'
 import { renderScheduleImage } from './story.js'
-import { TENANTS, getTenant, tenantByChatId, isTenantAdmin } from './tenants.js'
+import { TENANTS, getTenant, tenantByChatId, isTenantAdmin, isSuperAdmin } from './tenants.js'
 
 const TOKEN = () => process.env.TELEGRAM_BOT_TOKEN
 
@@ -48,6 +48,10 @@ const awaitingMonth = new Map()
 // ponytail: in-memory rebook offers (client chat id → cancelled booking data);
 // lost on restart — the client just books on the site instead.
 const rebookCtx = new Map()
+const awaitingNew = new Map()
+// ponytail: superadmin's picked tenant per chat, in-memory — after a restart
+// just run /admin again.
+const adminTenant = new Map()
 
 export function isTelegramConfigured() {
   return Boolean(process.env.TELEGRAM_BOT_TOKEN)
@@ -232,7 +236,17 @@ async function onCallback(cq) {
   // Client-side buttons (rebook offers) arrive from non-tenant chats
   if ((cq.data || '').startsWith('cl|')) return await onClientRebook(cq)
 
-  const tenant = tenantByChatId(chatId)
+  // Superadmin picked a master in the /admin panel → drive that tenant from here
+  if ((cq.data || '').startsWith('adm|') && isSuperAdmin(cq.from?.id)) {
+    const t = getTenant(cq.data.split('|')[1])
+    if (!t) return answerCallback(cq.id)
+    adminTenant.set(String(chatId), t.id)
+    await editMessageText(chatId, cq.message?.message_id, menuText(t), { reply_markup: menuKeyboard() })
+    return answerCallback(cq.id, t.name)
+  }
+
+  let tenant = tenantByChatId(chatId)
+  if (isSuperAdmin(cq.from?.id)) tenant = getTenant(adminTenant.get(String(chatId))) || tenant
   if (!tenant || !isTenantAdmin(tenant, cq.from?.id)) return answerCallback(cq.id)
 
   const ctx = { chatId, tenant, calendarId: tenant.calendarId, tz: tenant.timezone, availability: tenant.availability || [] }
@@ -281,6 +295,7 @@ async function onCallback(cq) {
     // otherwise the master's reply would be swallowed as a slots/month list.
     awaitingSlots.delete(String(chatId))
     awaitingMonth.delete(String(chatId))
+    awaitingNew.delete(String(chatId))
     awaitingTime.set(String(chatId), { eventId, messageId, originalText, ctx })
     await sendMessage(
       chatId,
@@ -298,9 +313,18 @@ async function onCallback(cq) {
 
 async function onMessage(msg) {
   const chatId = msg.chat?.id
-  const tenant = tenantByChatId(chatId)
   const text = (msg.text || '').trim()
   const cmd = text.split(/[\s@]/)[0]
+
+  // Superadmin panel: pick which master this chat's menu drives
+  if (cmd === '/admin' && isSuperAdmin(msg.from?.id)) {
+    return sendMessage(chatId, '👑 <b>Админ-панель</b>\nВыбери мастера — меню и записи будут его. Сменить мастера: снова /admin.', {
+      reply_markup: { inline_keyboard: TENANTS.map((t) => [{ text: t.name, callback_data: `adm|${t.id}` }]) },
+    })
+  }
+
+  let tenant = tenantByChatId(chatId)
+  if (isSuperAdmin(msg.from?.id)) tenant = getTenant(adminTenant.get(String(chatId))) || tenant
 
   // Client tapped the site's "get notifications" deep link:
   // /start <tenantId>_<eventId> → remember their chat on that booking.
@@ -368,6 +392,22 @@ async function onMessage(msg) {
   }
 
   if (cmd === '/start' || cmd === '/menu') return sendMenu(ctx)
+
+  // Adding a booking by hand: "ДД.ММ[.ГГГГ] ЧЧ:ММ Имя[, услуга]"
+  if (awaitingNew.has(String(chatId))) {
+    const parsed = parseNewBooking(text, ctx.tz)
+    if (!parsed) {
+      return sendMessage(chatId, '⚠️ Формат: <b>ДД.ММ ЧЧ:ММ Имя, услуга</b>, например <b>25.07 14:00 Анна, брови</b>.')
+    }
+    awaitingNew.delete(String(chatId))
+    const booking = { ...parsed, contact: '', method: 'whatsapp', message: 'Добавлена вручную через бота' }
+    const event = await createPendingEvent(booking, ctx.calendarId, ctx.tz)
+    await confirmEvent(event.id, {}, ctx.calendarId, ctx.tz)
+    return sendMessage(
+      chatId,
+      `✅ Запись добавлена: ${dayLabel(parsed.date)} ${parsed.time} — <b>${parsed.name}</b>${parsed.service ? ` (${parsed.service})` : ''}`
+    )
+  }
 
   // Master is sending the whole month's dates+times for the site
   if (awaitingMonth.has(String(chatId))) {
@@ -473,7 +513,7 @@ async function finalizeConfirm({ ctx, eventId, messageId, originalText = '', dat
 // Scheduling menu (per-tenant via ctx.calendarId)
 // ===========================================================================
 
-const menuText = () => '⚙️ <b>Меню мастера</b>\nУправление расписанием:'
+const menuText = (t) => `⚙️ <b>Меню мастера</b>${t?.name ? ` — ${t.name}` : ''}\nУправление расписанием:`
 const menuKeyboard = () => ({
   inline_keyboard: [
     [{ text: '📒 Записи клиентов (перенос / отмена)', callback_data: 'm|bookings' }],
@@ -489,7 +529,7 @@ async function sendMenu(ctx) {
   if (!isCalendarConfigured()) {
     return sendMessage(ctx.chatId, '⚠️ Google Calendar ещё не подключён.')
   }
-  return sendMessage(ctx.chatId, menuText(), { reply_markup: menuKeyboard() })
+  return sendMessage(ctx.chatId, menuText(ctx.tenant), { reply_markup: menuKeyboard() })
 }
 
 function dayLabel(dateStr) {
@@ -698,6 +738,7 @@ async function buildBookingsKeyboard(calendarId, tz) {
       callback_data: `bk|${b.id}`,
     },
   ])
+  rows.push([{ text: '➕ Добавить запись', callback_data: 'm|newbk' }])
   rows.push([{ text: '⬅️ Меню', callback_data: 'm|home' }])
   return { markup: { inline_keyboard: rows }, empty: list.length === 0 }
 }
@@ -713,11 +754,12 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
   awaitingSlots.delete(String(chatId))
   awaitingMonth.delete(String(chatId))
   awaitingTime.delete(String(chatId))
+  awaitingNew.delete(String(chatId))
 
   if (action === 'm') {
     const sub = parts[1]
     if (sub === 'home') {
-      await editMessageText(chatId, messageId, menuText(), { reply_markup: menuKeyboard() })
+      await editMessageText(chatId, messageId, menuText(ctx.tenant), { reply_markup: menuKeyboard() })
     } else if (sub === 'bookings') {
       const { markup, empty } = await buildBookingsKeyboard(cid, ctx.tz)
       await editMessageText(
@@ -727,6 +769,12 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
           ? '📒 <b>Записи клиентов</b>\n\nАктивных записей нет.'
           : '📒 <b>Записи клиентов</b>\nВыбери запись, чтобы перенести или отменить:',
         { reply_markup: markup }
+      )
+    } else if (sub === 'newbk') {
+      awaitingNew.set(String(chatId), ctx)
+      await sendMessage(
+        chatId,
+        '➕ Пришли запись как <b>ДД.ММ ЧЧ:ММ Имя, услуга</b>\nНапример: <code>25.07 14:00 Анна, брови</code>'
       )
     } else if (sub === 'slots') {
       await editMessageText(chatId, messageId, availText(), {
@@ -961,6 +1009,22 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
   }
 
   return answerCallback(callbackId)
+}
+
+// "ДД.ММ[.ГГГГ] ЧЧ:ММ Имя[, услуга]" → { date, time, name, service } | null.
+// Year defaults to the current one; a date already past rolls to next year.
+export function parseNewBooking(input, tz) {
+  const m = input.trim().match(/^(\d{1,2})[./-](\d{1,2})(?:[./-](\d{4}))?\s+(\d{1,2}[:.]\d{2})\s+(.+)$/)
+  if (!m) return null
+  const time = pad(m[4].replace('.', ':'))
+  if (!time) return null
+  const today = localToday(tz)
+  const year = m[3] || today.slice(0, 4)
+  let date = `${year}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`
+  if (!m[3] && date < today) date = `${Number(year) + 1}${date.slice(4)}`
+  if (!isRealDate(date)) return null
+  const [name, ...svc] = m[5].split(',')
+  return { date, time, name: name.trim(), service: svc.join(',').trim() }
 }
 
 export function parseTime(input) {

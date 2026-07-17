@@ -53,7 +53,7 @@ export const TENANTS = [
     name: 'Uliana Lomaka',
     telegramChatId: '-1003902963683', // group with Uliana + the bot
     // Personal Telegram user ids allowed to press Confirm/Decline & use /menu.
-    adminIds: ['653377236', '5609757241'],
+    adminIds: ['653377236'],
     calendarId: 'ulianalom15@gmail.com',
     timezone: 'Europe/Tallinn',
     instagram: 'lomaka.lashes', // review-ask button in the bot
@@ -85,6 +85,10 @@ export const TENANTS = [
   // },
 ]
 
+// You — full admin on every tenant + the /admin panel in the bot
+export const SUPER_ADMINS = ['5609757241']
+export const isSuperAdmin = (uid) => SUPER_ADMINS.includes(String(uid))
+
 export const getTenant = (id) => TENANTS.find((t) => t.id === id) || null
 
 // Resolve the tenant from the Telegram chat a message/callback came from
@@ -95,6 +99,7 @@ export const tenantByChatId = (chatId) =>
 export function isTenantAdmin(tenant, userId) {
   if (!tenant) return false
   const uid = String(userId)
+  if (isSuperAdmin(uid)) return true
   if (uid === String(tenant.telegramChatId)) return true // personal chat = that user
   return (tenant.adminIds || []).map(String).includes(uid)
 }
