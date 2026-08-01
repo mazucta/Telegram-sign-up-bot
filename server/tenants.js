@@ -78,7 +78,7 @@ export const TENANTS = [
     name: 'Anna Shkabura',
     telegramChatId: '-5371138723', // group with Anna + the bot
     adminIds: ['569509383'], // Anna's personal id — lets her press Confirm/Decline
-    calendarId: 'annaskabura1405@gmail.com',
+    calendarId: 'annashkabura1405@gmail.com',
     timezone: 'Europe/Tallinn',
     instagram: 'colorist__anna', // review-ask button in the bot
     allowedOrigins: ['*'],
