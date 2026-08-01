@@ -454,6 +454,21 @@ export async function getAvailability(days = WINDOW_DAYS, calendarId = DEFAULT_C
   return { busy: [...busy], daysOff: [...daysOff], slots }
 }
 
+// Why a tenant's calendar isn't working, without digging through deploy logs:
+// the exact Google error plus the service-account address the master has to
+// share their calendar with. Nothing secret — the key stays in env.
+export async function calendarDiag(calendarId) {
+  const serviceAccount = process.env.GOOGLE_CLIENT_EMAIL || ''
+  if (!isCalendarConfigured()) return { ok: false, reason: 'no_credentials' }
+  if (!calendarId) return { ok: false, reason: 'no_calendar_id', serviceAccount }
+  try {
+    await getCalendar().events.list({ calendarId, maxResults: 1, timeMin: new Date().toISOString() })
+    return { ok: true, calendarId, serviceAccount }
+  } catch (err) {
+    return { ok: false, calendarId, serviceAccount, code: err.code || 0, message: err.message }
+  }
+}
+
 export async function getDayStatus(date, calendarId = DEFAULT_CAL()) {
   const items = await listWindow(`${addDays(date, -1)}T00:00:00Z`, `${addDays(date, 2)}T00:00:00Z`, calendarId)
   let dayoff = false

@@ -17,6 +17,7 @@ import {
   getAvailability,
   getCurated,
   getDayStatus,
+  calendarDiag,
   filterCurated,
   marks,
   serviceMinutes,
@@ -174,6 +175,13 @@ app.get('/api/availability', async (req, res) => {
     console.error('Availability failed:', err)
     return res.json({ busy: [], daysOff: [], curated })
   }
+})
+
+// Is this master's calendar actually reachable? /api/diag?tenant=anna
+app.get('/api/diag', async (req, res) => {
+  const tenant = getTenant(String(req.query.tenant || ''))
+  if (!tenant) return res.status(400).json({ ok: false, error: 'unknown_tenant' })
+  res.json({ tenant: tenant.id, ...(await calendarDiag(tenant.calendarId)) })
 })
 
 app.post('/api/telegram/webhook', (req, res) => {
