@@ -77,9 +77,7 @@ export const TENANTS = [
     id: 'anna',
     name: 'Anna Shkabura',
     telegramChatId: '-5371138723', // group with Anna + the bot
-    // ponytail: add Anna's personal Telegram user id so SHE can press
-    // Confirm/Decline — until then only you (super admin) can.
-    adminIds: [],
+    adminIds: ['569509383'], // Anna's personal id — lets her press Confirm/Decline
     // ponytail: her Google Calendar ID, once she shares it with GOOGLE_CLIENT_EMAIL
     // ("Make changes to events"). Empty → Telegram-only, no slots/blocks.
     calendarId: '',
