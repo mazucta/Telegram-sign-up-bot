@@ -465,7 +465,13 @@ export async function calendarDiag(calendarId) {
     await getCalendar().events.list({ calendarId, maxResults: 1, timeMin: new Date().toISOString() })
     return { ok: true, calendarId, serviceAccount }
   } catch (err) {
-    return { ok: false, calendarId, serviceAccount, code: err.code || 0, message: err.message }
+    // Every calendar the bot CAN see: if the master shared a different one (or
+    // a typo'd id), it shows up here and the fix is obvious.
+    const visible = await getCalendar()
+      .calendarList.list({ maxResults: 50 })
+      .then((r) => (r.data.items || []).map((c) => c.id))
+      .catch(() => [])
+    return { ok: false, calendarId, serviceAccount, code: err.code || 0, message: err.message, visible }
   }
 }
 

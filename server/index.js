@@ -42,7 +42,8 @@ const PUBLIC_URL = process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || 
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || ''
 
 // Anti-spam: max bookings per IP+tenant per day (in-memory; resets daily)
-const MAX_BOOKINGS_PER_IP_PER_DAY = 2
+// ponytail: lifted to 500 for testing — put it back to 2 when Anna's live.
+const MAX_BOOKINGS_PER_IP_PER_DAY = 500
 const bookingCounts = new Map()
 function usedToday(key) {
   const today = new Date().toISOString().slice(0, 10)
