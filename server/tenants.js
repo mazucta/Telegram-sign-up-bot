@@ -76,9 +76,9 @@ export const TENANTS = [
   {
     id: 'anna',
     name: 'Anna Shkabura',
-    // ponytail: bookings land in YOUR chat until Anna presses Start on the bot —
-    // then put her id here (and hers in adminIds) so she gets the cards herself.
-    telegramChatId: '5609757241',
+    telegramChatId: '-5371138723', // group with Anna + the bot
+    // ponytail: add Anna's personal Telegram user id so SHE can press
+    // Confirm/Decline — until then only you (super admin) can.
     adminIds: [],
     // ponytail: her Google Calendar ID, once she shares it with GOOGLE_CLIENT_EMAIL
     // ("Make changes to events"). Empty → Telegram-only, no slots/blocks.
