@@ -22,6 +22,30 @@ const DEFAULT_CAL = () => process.env.GOOGLE_CALENDAR_ID
 // Bookable hours (shared by bot, website and story). Every two hours, 10:00–20:00.
 export const TIME_SLOTS = ['10:00', '12:00', '14:00', '16:00', '18:00', '20:00']
 export const SLOT_HOURS = 2
+export const DEFAULT_MINUTES = SLOT_HOURS * 60
+
+// How long a procedure takes. The site's service labels already carry it
+// ("Стрижка · 60 мин · 30-45 €", "Air Touch · 4-5 ч", "Balayage · 3 h", "3 t"),
+// and the master can type it when adding a booking by hand ("Аня, балаяж 3ч").
+// A range takes the upper bound (never under-block the chair); no match → 2 h.
+const DURATION_RE = /(\d+)\s*(?:[-–—]\s*(\d+)\s*)?(мин|min|ч|hour|tund|h|t)(?![a-zа-яё])/i
+export function serviceMinutes(service) {
+  const m = DURATION_RE.exec(String(service || ''))
+  if (!m) return DEFAULT_MINUTES
+  const n = Number(m[2] || m[1])
+  if (!n) return DEFAULT_MINUTES
+  return /^(мин|min)/i.test(m[3]) ? n : n * 60
+}
+
+// Actual length of an existing event — so a reschedule keeps the procedure's
+// duration, and a booking the master dragged longer in Google Calendar counts
+// at its real length. Falls back to 2 h (events created before durations).
+export function eventMinutes(ev) {
+  const s = ev?.start?.dateTime
+  const e = ev?.end?.dateTime
+  if (!s || !e) return DEFAULT_MINUTES
+  return Math.max(15, Math.round((new Date(e) - new Date(s)) / 60e3)) || DEFAULT_MINUTES
+}
 
 // How far ahead bookings are offered (site availability, bot menu, story).
 export const WINDOW_DAYS = 30
@@ -67,10 +91,24 @@ const normTime = (t) => {
   const [h, m] = String(t).split(':')
   return `${String(h).padStart(2, '0')}:${m}`
 }
-const addSlotHours = (t) => {
-  const [h, m] = t.split(':').map(Number)
-  const eh = Math.min(h + SLOT_HOURS, 23)
-  return `${String(eh).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+const hhmm = (mins) => `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`
+const toMinutes = (t) => {
+  const [h, m] = normTime(t).split(':').map(Number)
+  return h * 60 + m
+}
+const addMinutes = (t, mins) => hhmm(Math.min(toMinutes(t) + mins, 23 * 60 + 59))
+
+// Every quarter-hour mark an appointment occupies, so a 4 h Air Touch marks the
+// whole afternoon busy — not just its start time. The exact start is included
+// even when it is off-grid (curated times are matched by exact string).
+// ponytail: 15-min grid; drop GRID to 5 if a master ever offers times off it.
+const GRID = 15
+export function marks(time, mins = DEFAULT_MINUTES) {
+  const start = toMinutes(time)
+  const end = Math.min(start + Math.max(mins, 1), 24 * 60)
+  const out = [normTime(time)]
+  for (let x = Math.floor(start / GRID) * GRID; x < end; x += GRID) out.push(hhmm(x))
+  return out
 }
 export const addDays = (dateStr, n) => {
   const d = new Date(`${dateStr}T00:00:00Z`)
@@ -78,13 +116,14 @@ export const addDays = (dateStr, n) => {
   return d.toISOString().slice(0, 10)
 }
 
-function slot(date, time, tz) {
+function slot(date, time, tz, mins = DEFAULT_MINUTES) {
   const t = /^\d{1,2}:\d{2}$/.test(time || '') ? normTime(time) : '11:00'
   return {
     date,
     time: t,
+    mins,
     start: { dateTime: `${date}T${t}:00`, timeZone: tz },
-    end: { dateTime: `${date}T${addSlotHours(t)}:00`, timeZone: tz },
+    end: { dateTime: `${date}T${addMinutes(t, mins)}:00`, timeZone: tz },
   }
 }
 
@@ -114,7 +153,7 @@ async function listWindow(fromISO, toISO, calendarId) {
 // ---- bookings ---------------------------------------------------------------
 
 export async function createPendingEvent(booking, calendarId = DEFAULT_CAL(), tz = DEFAULT_TZ) {
-  const s = slot(booking.date, booking.time, tz)
+  const s = slot(booking.date, booking.time, tz, serviceMinutes(booking.service))
   const res = await getCalendar().events.insert({
     calendarId,
     requestBody: {
@@ -153,7 +192,8 @@ export async function confirmEvent(eventId, { date, time } = {}, calendarId = DE
     colorId: '10',
   }
   if (date) {
-    const s = slot(date, time || '11:00', tz)
+    // Rescheduling keeps the procedure's length (2 h only for legacy events)
+    const s = slot(date, time || '11:00', tz, eventMinutes(ev))
     requestBody.start = s.start
     requestBody.end = s.end
     priv.slotDate = s.date
@@ -400,7 +440,10 @@ export async function getAvailability(days = WINDOW_DAYS, calendarId = DEFAULT_C
       daysOff.add(ev.start.date)
       continue
     }
-    if (p.slotDate && p.slotTime) busy.add(`${p.slotDate} ${p.slotTime}`)
+    // A booking blocks its whole length, not just its start slot
+    if (p.slotDate && p.slotTime) {
+      for (const t of marks(p.slotTime, eventMinutes(ev))) busy.add(`${p.slotDate} ${t}`)
+    }
   }
   // Today's already-started slots can't be booked (studio-timezone "now")
   const slots = await getSlots(calendarId)
@@ -418,7 +461,9 @@ export async function getDayStatus(date, calendarId = DEFAULT_CAL()) {
   for (const ev of items) {
     const p = ev.extendedProperties?.private || {}
     if ((p.type === 'dayoff' && p.dayoff === date) || ev.start?.date === date) dayoff = true
-    if (p.slotDate === date && p.slotTime) status[p.slotTime] = p.type === 'block' ? 'blocked' : 'booked'
+    if (p.slotDate === date && p.slotTime) {
+      for (const t of marks(p.slotTime, eventMinutes(ev))) status[t] = p.type === 'block' ? 'blocked' : 'booked'
+    }
   }
   return { dayoff, status }
 }
@@ -444,9 +489,11 @@ export async function toggleBlock(date, time, calendarId = DEFAULT_CAL(), tz = D
   let booked = false
   for (const ev of items) {
     const p = ev.extendedProperties?.private || {}
-    if (p.slotDate === date && p.slotTime === t) {
-      if (p.type === 'block') blockEv = ev
-      else booked = true
+    if (p.slotDate !== date || !p.slotTime) continue
+    if (p.type === 'block') {
+      if (p.slotTime === t) blockEv = ev
+    } else if (marks(p.slotTime, eventMinutes(ev)).includes(t)) {
+      booked = true // covered by a client's appointment, whatever its length
     }
   }
   if (booked) return 'booked'
@@ -463,7 +510,7 @@ export async function blockWholeDay(date, calendarId = DEFAULT_CAL(), tz = DEFAU
   const taken = new Set()
   for (const ev of items) {
     const p = ev.extendedProperties?.private || {}
-    if (p.slotDate === date && p.slotTime) taken.add(p.slotTime)
+    if (p.slotDate === date && p.slotTime) for (const t of marks(p.slotTime, eventMinutes(ev))) taken.add(t)
   }
   const slots = await getSlots(calendarId)
   for (const t of slots) if (!taken.has(t)) await createBlock(date, t, calendarId, tz)

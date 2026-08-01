@@ -73,6 +73,21 @@ export const TENANTS = [
     allowedOrigins: ['*'],
   },
 
+  {
+    id: 'anna',
+    name: 'Anna Shkabura',
+    // ponytail: bookings land in YOUR chat until Anna presses Start on the bot —
+    // then put her id here (and hers in adminIds) so she gets the cards herself.
+    telegramChatId: '5609757241',
+    adminIds: [],
+    // ponytail: her Google Calendar ID, once she shares it with GOOGLE_CLIENT_EMAIL
+    // ("Make changes to events"). Empty → Telegram-only, no slots/blocks.
+    calendarId: '',
+    timezone: 'Europe/Tallinn',
+    instagram: 'colorist__anna', // review-ask button in the bot
+    allowedOrigins: ['*'],
+  },
+
   // --- Add more masters here ---
   // {
   //   id: 'olena',

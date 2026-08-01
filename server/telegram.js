@@ -15,7 +15,7 @@ import {
   listBookings,
   nowInTz,
   setPrivateProps,
-  SLOT_HOURS,
+  serviceMinutes,
   getAvailability,
   getDayStatus,
   toggleBlock,
@@ -94,11 +94,12 @@ const dayLabelEn = (dateStr) =>
 function gcalLink({ service, date, time }, tz) {
   if (!date || !time) return ''
   const [h, m] = time.split(':').map(Number)
+  const end = Math.min(h * 60 + m + serviceMinutes(service), 23 * 60 + 59)
   const fmt = (hh, mm) => `${date.replace(/-/g, '')}T${String(hh).padStart(2, '0')}${String(mm).padStart(2, '0')}00`
   return (
     `https://calendar.google.com/calendar/render?action=TEMPLATE` +
     `&text=${encodeURIComponent(service || 'Beauty appointment')}` +
-    `&dates=${fmt(h, m)}/${fmt(Math.min(h + SLOT_HOURS, 23), m)}` +
+    `&dates=${fmt(h, m)}/${fmt(Math.floor(end / 60), end % 60)}` +
     `&ctz=${encodeURIComponent(tz || 'Europe/Berlin')}`
   )
 }

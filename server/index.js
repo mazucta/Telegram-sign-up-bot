@@ -18,6 +18,8 @@ import {
   getCurated,
   getDayStatus,
   filterCurated,
+  marks,
+  serviceMinutes,
   nowInTz,
   SCAN_DAYS,
 } from './google-calendar.js'
@@ -108,8 +110,10 @@ app.post('/api/booking', async (req, res) => {
   // Reject slots already taken / blocked / on a day off (no silent double-booking)
   if (useCalendar && date && time) {
     const { dayoff, status } = await getDayStatus(date, tenant.calendarId).catch(() => ({ dayoff: false, status: {} }))
-    const t = time.length === 4 ? `0${time}` : time
-    if (dayoff || status[t]) return res.status(409).json({ ok: false, error: 'slot_taken' })
+    // The whole procedure must fit: a 4 h Air Touch starting an hour before an
+    // existing booking overlaps it even though its start time looks free.
+    const busy = marks(time, serviceMinutes(service)).some((t) => status[t])
+    if (dayoff || busy) return res.status(409).json({ ok: false, error: 'slot_taken' })
   }
 
   // Calendar and Telegram are independent: one failing must not lose the other.
