@@ -261,13 +261,14 @@ async function onCallback(cq) {
   const originalText = cq.message?.text || ''
 
   if (action === 'd') {
+    let btn = null
     if (hasCal) {
       const p = (await getEvent(eventId, ctx.calendarId).catch(() => null))?.extendedProperties?.private
       // Delete first — the client must only hear "cancelled" once it's true.
       await deleteEvent(eventId, ctx.calendarId).catch((err) => {
         if (err?.code !== 404 && err?.code !== 410) throw err // already gone is fine
       })
-      if (p?.clientChatId) {
+      if (p) {
         const info = {
           clientChatId: p.clientChatId,
           clientName: p.clientName,
@@ -277,16 +278,21 @@ async function onCallback(cq) {
           date: p.slotDate,
           time: p.slotTime,
         }
-        const kb = await rebookKeyboard(ctx.tenant, info)
-        notifyClient(
-          p.clientChatId,
-          cancelTextForClient(info) + (kb ? '\n\nOr pick a new time right here:' : ''),
-          kb ? { reply_markup: kb } : {}
-        )
+        // Same as cancelling from the bookings list: a declined client still
+        // needs an explanation, and most of them never subscribed to the bot.
+        btn = messageClientButton(info.method, info.contact, cancelTextForClient(info))
+        if (p.clientChatId) {
+          const kb = await rebookKeyboard(ctx.tenant, info)
+          notifyClient(
+            p.clientChatId,
+            cancelTextForClient(info) + (kb ? '\n\nOr pick a new time right here:' : ''),
+            kb ? { reply_markup: kb } : {}
+          )
+        }
       }
     }
     await editMessageText(chatId, messageId, `${originalText}\n\n❌ <b>Declined</b>`, {
-      reply_markup: { inline_keyboard: [] },
+      reply_markup: { inline_keyboard: btn ? [[btn]] : [] },
     })
     return answerCallback(cq.id, 'Declined')
   }
