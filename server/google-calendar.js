@@ -302,17 +302,20 @@ async function findConfigEvent(type, calendarId) {
 
 const findSlotsConfig = (calendarId) => findConfigEvent('slotsconfig', calendarId)
 
-export async function getSlots(calendarId = DEFAULT_CAL()) {
-  if (!isCalendarConfigured() || !calendarId) return TIME_SLOTS
+// `fallback` is the master's own default (tenant.slots) for when they haven't
+// set times from the bot; TIME_SLOTS only when they have neither.
+export async function getSlots(calendarId = DEFAULT_CAL(), fallback = TIME_SLOTS) {
+  const base = fallback?.length ? fallback : TIME_SLOTS
+  if (!isCalendarConfigured() || !calendarId) return base
   try {
     const ev = await findSlotsConfig(calendarId)
     const list = (ev?.extendedProperties?.private?.slots || '')
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean)
-    return list.length ? list : TIME_SLOTS
+    return list.length ? list : base
   } catch {
-    return TIME_SLOTS
+    return base
   }
 }
 
@@ -420,8 +423,8 @@ export function filterCurated(source, { busy = [], daysOff = [] } = {}, tz = DEF
 
 // ---- availability (blocks, days off, busy slots) ----------------------------
 
-export async function getAvailability(days = WINDOW_DAYS, calendarId = DEFAULT_CAL(), tz = DEFAULT_TZ) {
-  if (!isCalendarConfigured() || !calendarId) return { busy: [], daysOff: [], slots: TIME_SLOTS }
+export async function getAvailability(days = WINDOW_DAYS, calendarId = DEFAULT_CAL(), tz = DEFAULT_TZ, fallback = TIME_SLOTS) {
+  if (!isCalendarConfigured() || !calendarId) return { busy: [], daysOff: [], slots: fallback }
   const now = Date.now()
   const items = await listWindow(
     new Date(now - 24 * 3600e3).toISOString(),
@@ -446,7 +449,7 @@ export async function getAvailability(days = WINDOW_DAYS, calendarId = DEFAULT_C
     }
   }
   // Today's already-started slots can't be booked (studio-timezone "now")
-  const slots = await getSlots(calendarId)
+  const slots = await getSlots(calendarId, fallback)
   const { date: today, hour } = nowInTz(tz)
   for (const t of slots) {
     if (parseInt(t, 10) <= hour) busy.add(`${today} ${t}`)
@@ -526,14 +529,14 @@ export async function toggleBlock(date, time, calendarId = DEFAULT_CAL(), tz = D
   return 'blocked'
 }
 
-export async function blockWholeDay(date, calendarId = DEFAULT_CAL(), tz = DEFAULT_TZ) {
+export async function blockWholeDay(date, calendarId = DEFAULT_CAL(), tz = DEFAULT_TZ, fallback = TIME_SLOTS) {
   const items = await listWindow(`${addDays(date, -1)}T00:00:00Z`, `${addDays(date, 2)}T00:00:00Z`, calendarId)
   const taken = new Set()
   for (const ev of items) {
     const p = ev.extendedProperties?.private || {}
     if (p.slotDate === date && p.slotTime) for (const t of marks(p.slotTime, eventMinutes(ev))) taken.add(t)
   }
-  const slots = await getSlots(calendarId)
+  const slots = await getSlots(calendarId, fallback)
   for (const t of slots) if (!taken.has(t)) await createBlock(date, t, calendarId, tz)
 }
 

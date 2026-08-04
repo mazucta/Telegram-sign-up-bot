@@ -160,13 +160,13 @@ app.get('/api/availability', async (req, res) => {
   if (!tenant) return res.json({ busy: [], daysOff: [], curated: [] })
   const curated = tenant.availability || []
   if (!isCalendarConfigured() || !tenant.calendarId) {
-    return res.json({ busy: [], daysOff: [], curated })
+    return res.json({ busy: [], daysOff: [], slots: tenant.slots || [], curated })
   }
   try {
     // Master's per-date times come from their calendar (set via the bot);
     // the hardcoded tenant list is only a fallback until they set them.
     const [data, stored] = await Promise.all([
-      getAvailability(SCAN_DAYS, tenant.calendarId, tenant.timezone),
+      getAvailability(SCAN_DAYS, tenant.calendarId, tenant.timezone, tenant.slots),
       getCurated(tenant.calendarId),
     ])
     const source = stored.length ? stored : curated
@@ -174,7 +174,7 @@ app.get('/api/availability', async (req, res) => {
     return res.json({ ...data, curated: filterCurated(source, data, tenant.timezone) })
   } catch (err) {
     console.error('Availability failed:', err)
-    return res.json({ busy: [], daysOff: [], curated })
+    return res.json({ busy: [], daysOff: [], slots: tenant.slots || [], curated })
   }
 })
 

@@ -79,6 +79,9 @@ export const TENANTS = [
     telegramChatId: '-5371138723', // group with Anna + the bot
     adminIds: ['569509383'], // Anna's personal id — lets her press Confirm/Decline
     calendarId: 'annashkabura1405@gmail.com',
+    // Her bookable start times, every hour 10:00–19:00. She can override this
+    // from the bot (/menu → «Время записи на сайте») — that wins over this list.
+    slots: ['10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00', '19:00'],
     timezone: 'Europe/Tallinn',
     instagram: 'colorist__anna', // review-ask button in the bot
     allowedOrigins: ['*'],
