@@ -111,7 +111,7 @@ app.post('/api/booking', async (req, res) => {
 
   // Reject slots already taken / blocked / on a day off (no silent double-booking)
   if (useCalendar && date && time) {
-    const { dayoff, status } = await getDayStatus(date, tenant.calendarId).catch(() => ({ dayoff: false, status: {} }))
+    const { dayoff, status } = await getDayStatus(date, tenant.calendarId, tenant.timezone).catch(() => ({ dayoff: false, status: {} }))
     // The whole procedure must fit: a 4 h Air Touch starting an hour before an
     // existing booking overlaps it even though its start time looks free.
     const busy = marks(time, serviceMinutes(service)).some((t) => status[t])

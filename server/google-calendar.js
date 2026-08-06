@@ -98,6 +98,40 @@ const toMinutes = (t) => {
 }
 const addMinutes = (t, mins) => hhmm(Math.min(toMinutes(t) + mins, 23 * 60 + 59))
 
+// An event the master added by hand carries only an ISO timestamp. The server
+// runs in UTC, so the slot it occupies has to be read in the studio timezone.
+function localParts(iso, tz = DEFAULT_TZ) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(iso))
+  const get = (t) => parts.find((p) => p.type === t)?.value
+  const hour = get('hour') === '24' ? '00' : get('hour') // some runtimes emit 24 at midnight
+  return { date: `${get('year')}-${get('month')}-${get('day')}`, time: `${hour}:${get('minute')}` }
+}
+
+// When (and for how long) an event takes the chair. Covers our own bookings and
+// blocks — they carry slotDate/slotTime — plus anything the master put in the
+// calendar herself: a dentist appointment blocks the site just as a booking does.
+// Events set to "Free" in Google are deliberately ignored, that is the standard
+// way to keep a reminder from occupying time.
+// ponytail: an event running past midnight only blocks up to 24:00; split it if
+// a master ever works night shifts.
+export function busySpan(ev, tz = DEFAULT_TZ) {
+  if (ev.transparency === 'transparent' || ev.status === 'cancelled') return null
+  const p = ev.extendedProperties?.private || {}
+  if (p.type === 'slotsconfig' || p.type === 'dayoff' || p.type === 'curated') return null
+  if (p.slotDate && p.slotTime) return { date: p.slotDate, time: p.slotTime, mins: eventMinutes(ev), own: true }
+  if (!ev.start?.dateTime) return null // all-day events are handled as days off
+  const { date, time } = localParts(ev.start.dateTime, tz)
+  return { date, time, mins: eventMinutes(ev), own: false }
+}
+
 // Every quarter-hour mark an appointment occupies, so a 4 h Air Touch marks the
 // whole afternoon busy — not just its start time. The exact start is included
 // even when it is off-grid (curated times are matched by exact string).
@@ -443,10 +477,9 @@ export async function getAvailability(days = WINDOW_DAYS, calendarId = DEFAULT_C
       daysOff.add(ev.start.date)
       continue
     }
-    // A booking blocks its whole length, not just its start slot
-    if (p.slotDate && p.slotTime) {
-      for (const t of marks(p.slotTime, eventMinutes(ev))) busy.add(`${p.slotDate} ${t}`)
-    }
+    // Every busy event blocks its whole length, not just its start slot
+    const span = busySpan(ev, tz)
+    if (span) for (const t of marks(span.time, span.mins)) busy.add(`${span.date} ${t}`)
   }
   // Today's already-started slots can't be booked (studio-timezone "now")
   const slots = await getSlots(calendarId, fallback)
@@ -478,16 +511,17 @@ export async function calendarDiag(calendarId) {
   }
 }
 
-export async function getDayStatus(date, calendarId = DEFAULT_CAL()) {
+export async function getDayStatus(date, calendarId = DEFAULT_CAL(), tz = DEFAULT_TZ) {
   const items = await listWindow(`${addDays(date, -1)}T00:00:00Z`, `${addDays(date, 2)}T00:00:00Z`, calendarId)
   let dayoff = false
   const status = {}
   for (const ev of items) {
     const p = ev.extendedProperties?.private || {}
     if ((p.type === 'dayoff' && p.dayoff === date) || ev.start?.date === date) dayoff = true
-    if (p.slotDate === date && p.slotTime) {
-      for (const t of marks(p.slotTime, eventMinutes(ev))) status[t] = p.type === 'block' ? 'blocked' : 'booked'
-    }
+    const span = busySpan(ev, tz)
+    if (span?.date !== date) continue
+    // The master's own calendar entries read as taken, same as a client booking
+    for (const t of marks(span.time, span.mins)) status[t] = p.type === 'block' ? 'blocked' : 'booked'
   }
   return { dayoff, status }
 }
@@ -513,11 +547,12 @@ export async function toggleBlock(date, time, calendarId = DEFAULT_CAL(), tz = D
   let booked = false
   for (const ev of items) {
     const p = ev.extendedProperties?.private || {}
-    if (p.slotDate !== date || !p.slotTime) continue
+    const span = busySpan(ev, tz)
+    if (span?.date !== date) continue
     if (p.type === 'block') {
-      if (p.slotTime === t) blockEv = ev
-    } else if (marks(p.slotTime, eventMinutes(ev)).includes(t)) {
-      booked = true // covered by a client's appointment, whatever its length
+      if (span.time === t) blockEv = ev
+    } else if (marks(span.time, span.mins).includes(t)) {
+      booked = true // covered by an appointment or the master's own event
     }
   }
   if (booked) return 'booked'
@@ -533,8 +568,8 @@ export async function blockWholeDay(date, calendarId = DEFAULT_CAL(), tz = DEFAU
   const items = await listWindow(`${addDays(date, -1)}T00:00:00Z`, `${addDays(date, 2)}T00:00:00Z`, calendarId)
   const taken = new Set()
   for (const ev of items) {
-    const p = ev.extendedProperties?.private || {}
-    if (p.slotDate === date && p.slotTime) for (const t of marks(p.slotTime, eventMinutes(ev))) taken.add(t)
+    const span = busySpan(ev, tz)
+    if (span?.date === date) for (const t of marks(span.time, span.mins)) taken.add(t)
   }
   const slots = await getSlots(calendarId, fallback)
   for (const t of slots) if (!taken.has(t)) await createBlock(date, t, calendarId, tz)

@@ -36,3 +36,31 @@ assert.ok(marks('09:20', 60).includes('10:00'))
 assert.ok(marks('23:00', 300).every((t) => t < '24:00'))
 
 console.log('✅ durations ok')
+
+// --- the master's own calendar events occupy the chair too --------------------
+const { busySpan } = await import('./google-calendar.js')
+const TZ = 'Europe/Tallinn' // UTC+3 in August
+
+// A hand-made event is read in the studio timezone, not the server's UTC
+const dentist = {
+  start: { dateTime: '2026-08-10T11:00:00Z' },
+  end: { dateTime: '2026-08-10T12:30:00Z' },
+}
+assert.deepEqual(busySpan(dentist, TZ), { date: '2026-08-10', time: '14:00', mins: 90, own: false })
+assert.ok(marks('14:00', 90).includes('15:00')) // 14:00-15:30 also takes the 15:00 slot
+
+// Our own bookings keep using their stored slot, whatever the server timezone
+const booking = {
+  start: { dateTime: '2026-08-10T14:00:00+03:00' },
+  end: { dateTime: '2026-08-10T15:00:00+03:00' },
+  extendedProperties: { private: { slotDate: '2026-08-10', slotTime: '14:00' } },
+}
+assert.equal(busySpan(booking, TZ).own, true)
+assert.equal(busySpan(booking, TZ).time, '14:00')
+
+// "Free" events, all-day events and the config marker never block a slot
+assert.equal(busySpan({ ...dentist, transparency: 'transparent' }, TZ), null)
+assert.equal(busySpan({ start: { date: '2026-08-10' } }, TZ), null)
+assert.equal(busySpan({ ...dentist, extendedProperties: { private: { type: 'slotsconfig' } } }, TZ), null)
+
+console.log('✅ calendar events ok')

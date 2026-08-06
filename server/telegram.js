@@ -901,7 +901,7 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
 
   if (action === 'bd') {
     const date = parts[1]
-    const [{ dayoff, status }, slots] = await Promise.all([getDayStatus(date, cid), getSlots(cid, ctx.tenant?.slots)])
+    const [{ dayoff, status }, slots] = await Promise.all([getDayStatus(date, cid, ctx.tz), getSlots(cid, ctx.tenant?.slots)])
     await editMessageText(
       chatId,
       messageId,
@@ -915,7 +915,7 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
     const [, date, time] = parts
     const result = await toggleBlock(date, time, cid, ctx.tz)
     if (result === 'booked') return answerCallback(callbackId, '📅 Этот слот занят записью клиента')
-    const [{ status }, slots] = await Promise.all([getDayStatus(date, cid), getSlots(cid, ctx.tenant?.slots)])
+    const [{ status }, slots] = await Promise.all([getDayStatus(date, cid, ctx.tz), getSlots(cid, ctx.tenant?.slots)])
     await editMessageReplyMarkup(chatId, messageId, buildSlotsKeyboard(date, status, slots))
     return answerCallback(callbackId, result === 'blocked' ? '🚫 Заблокировано' : '🟢 Освобождено')
   }
@@ -924,7 +924,7 @@ async function onMenuCallback(data, callbackId, messageId, ctx) {
     const date = parts[1]
     if (action === 'ba') await blockWholeDay(date, cid, ctx.tz, ctx.tenant?.slots)
     else await unblockWholeDay(date, cid)
-    const [{ status }, slots] = await Promise.all([getDayStatus(date, cid), getSlots(cid, ctx.tenant?.slots)])
+    const [{ status }, slots] = await Promise.all([getDayStatus(date, cid, ctx.tz), getSlots(cid, ctx.tenant?.slots)])
     await editMessageReplyMarkup(chatId, messageId, buildSlotsKeyboard(date, status, slots))
     return answerCallback(callbackId, action === 'ba' ? '🚫 День заблокирован' : '🟢 День освобождён')
   }
