@@ -64,3 +64,16 @@ assert.equal(busySpan({ start: { date: '2026-08-10' } }, TZ), null)
 assert.equal(busySpan({ ...dentist, extendedProperties: { private: { type: 'slotsconfig' } } }, TZ), null)
 
 console.log('✅ calendar events ok')
+
+// A "working day" marker (10:00-20:00) means the master is AVAILABLE, not busy
+const shift = { start: { dateTime: '2026-08-07T07:00:00Z' }, end: { dateTime: '2026-08-07T17:00:00Z' } }
+assert.equal(busySpan(shift, TZ), null)
+// …but a long service booked through us still occupies its slots
+const ownAirTouch = {
+  start: { dateTime: '2026-08-07T10:00:00+03:00' },
+  end: { dateTime: '2026-08-07T15:00:00+03:00' },
+  extendedProperties: { private: { slotDate: '2026-08-07', slotTime: '10:00' } },
+}
+assert.equal(busySpan(ownAirTouch, TZ).mins, 300)
+
+console.log('✅ shift markers ignored')
