@@ -18,6 +18,7 @@ import {
   getCurated,
   getDayStatus,
   calendarDiag,
+  listBusy,
   filterCurated,
   marks,
   serviceMinutes,
@@ -182,7 +183,12 @@ app.get('/api/availability', async (req, res) => {
 app.get('/api/diag', async (req, res) => {
   const tenant = getTenant(String(req.query.tenant || ''))
   if (!tenant) return res.status(400).json({ ok: false, error: 'unknown_tenant' })
-  res.json({ tenant: tenant.id, ...(await calendarDiag(tenant.calendarId)) })
+  const diag = { tenant: tenant.id, ...(await calendarDiag(tenant.calendarId)) }
+  // ?events=1 → what occupies the calendar (times only, no titles)
+  if (req.query.events && diag.ok) {
+    diag.events = await listBusy(tenant.calendarId, tenant.timezone).catch(() => [])
+  }
+  res.json(diag)
 })
 
 app.post('/api/telegram/webhook', (req, res) => {

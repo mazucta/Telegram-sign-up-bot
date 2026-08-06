@@ -493,6 +493,25 @@ export async function getAvailability(days = WINDOW_DAYS, calendarId = DEFAULT_C
 // Why a tenant's calendar isn't working, without digging through deploy logs:
 // the exact Google error plus the service-account address the master has to
 // share their calendar with. Nothing secret — the key stays in env.
+// What is actually occupying a master's calendar, for when "everything is busy"
+// needs an explanation. Times and length only — event titles are the master's
+// private business and this endpoint is public.
+export async function listBusy(calendarId, tz = DEFAULT_TZ, days = 14) {
+  const now = Date.now()
+  const items = await listWindow(new Date(now).toISOString(), new Date(now + days * 864e5).toISOString(), calendarId)
+  return items.map((ev) => {
+    const span = busySpan(ev, tz)
+    return {
+      allDay: Boolean(ev.start?.date && !ev.start?.dateTime),
+      free: ev.transparency === 'transparent',
+      recurring: Boolean(ev.recurringEventId),
+      own: span?.own ?? null,
+      at: span ? `${span.date} ${span.time}` : ev.start?.date || '',
+      mins: span?.mins ?? 0,
+    }
+  })
+}
+
 export async function calendarDiag(calendarId) {
   const serviceAccount = process.env.GOOGLE_CLIENT_EMAIL || ''
   if (!isCalendarConfigured()) return { ok: false, reason: 'no_credentials' }
