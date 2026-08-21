@@ -516,6 +516,7 @@ export async function listBusy(calendarId, tz = DEFAULT_TZ, days = 14) {
       recurring: Boolean(ev.recurringEventId),
       own: span?.own ?? null,
       at: span ? `${span.date} ${span.time}` : ev.start?.date || '',
+      raw: ev.start?.dateTime || '', // what Google actually stored, offset included
       mins: span?.mins ?? 0,
     }
   })
@@ -526,8 +527,10 @@ export async function calendarDiag(calendarId) {
   if (!isCalendarConfigured()) return { ok: false, reason: 'no_credentials' }
   if (!calendarId) return { ok: false, reason: 'no_calendar_id', serviceAccount }
   try {
-    await getCalendar().events.list({ calendarId, maxResults: 1, timeMin: new Date().toISOString() })
-    return { ok: true, calendarId, serviceAccount }
+    const res = await getCalendar().events.list({ calendarId, maxResults: 1, timeMin: new Date().toISOString() })
+    // The calendar's own timezone: if it differs from the tenant's, every event
+    // the master types in her calendar is read (and shown) an hour off.
+    return { ok: true, calendarId, serviceAccount, calendarTimezone: res.data.timeZone || '' }
   } catch (err) {
     // Every calendar the bot CAN see: if the master shared a different one (or
     // a typo'd id), it shows up here and the fix is obvious.
