@@ -24,10 +24,6 @@ export const TIME_SLOTS = ['10:00', '12:00', '14:00', '16:00', '18:00', '20:00']
 export const SLOT_HOURS = 2
 export const DEFAULT_MINUTES = SLOT_HOURS * 60
 
-// Longer than any real procedure → a shift / vacation marker, not an appointment
-// ponytail: flat 6 h threshold; make it per-tenant if someone sells a longer service.
-export const SHIFT_MINUTES = 6 * 60
-
 // How long a procedure takes. The site's service labels already carry it
 // ("Стрижка · 60 мин · 30-45 €", "Air Touch · 4-5 ч", "Balayage · 3 h", "3 t"),
 // and the master can type it when adding a booking by hand ("Аня, балаяж 3ч").
@@ -132,13 +128,23 @@ export function busySpan(ev, tz = DEFAULT_TZ) {
   if (p.type === 'slotsconfig' || p.type === 'dayoff' || p.type === 'curated') return null
   if (p.slotDate && p.slotTime) return { date: p.slotDate, time: p.slotTime, mins: eventMinutes(ev), own: true }
   if (!ev.start?.dateTime) return null // all-day events are handled as days off
-  // Masters keep a "working day" 10:00-20:00 event in their calendar; treating
-  // that as busy would close every slot. The longest real service is 5 h, so a
-  // longer entry is a shift marker, not an appointment. A real full-day absence
-  // belongs in an all-day event (🌴 Выходной in the bot), which is handled above.
-  if (eventMinutes(ev) > SHIFT_MINUTES) return null
+  // Length is not a hint: a 10 h entry is as busy as a 1 h one. A "working day
+  // 10:00-20:00" marker must be set to "Free"/«Свободен» in Google — that is the
+  // standard flag for "this event does not occupy me", and it is honoured above.
   const { date, time } = localParts(ev.start.dateTime, tz)
   return { date, time, mins: eventMinutes(ev), own: false }
+}
+
+// Days an all-day event covers (Google's end.date is exclusive), so a holiday
+// spanning a week closes the whole week.
+// ponytail: capped at a year; longer absences aren't a booking-window problem.
+export function allDayDates(ev) {
+  const start = ev?.start?.date
+  if (!start || ev.start.dateTime) return []
+  const end = ev.end?.date > start ? ev.end.date : addDays(start, 1)
+  const out = []
+  for (let d = start; d < end && out.length < 366; d = addDays(d, 1)) out.push(d)
+  return out
 }
 
 // Every quarter-hour mark an appointment occupies, so a 4 h Air Touch marks the
@@ -483,7 +489,7 @@ export async function getAvailability(days = WINDOW_DAYS, calendarId = DEFAULT_C
       continue
     }
     if (ev.start?.date && !ev.start?.dateTime) {
-      daysOff.add(ev.start.date)
+      for (const d of allDayDates(ev)) daysOff.add(d)
       continue
     }
     // Every busy event blocks its whole length, not just its start slot
@@ -548,7 +554,7 @@ export async function getDayStatus(date, calendarId = DEFAULT_CAL(), tz = DEFAUL
   const status = {}
   for (const ev of items) {
     const p = ev.extendedProperties?.private || {}
-    if ((p.type === 'dayoff' && p.dayoff === date) || ev.start?.date === date) dayoff = true
+    if ((p.type === 'dayoff' && p.dayoff === date) || allDayDates(ev).includes(date)) dayoff = true
     const span = busySpan(ev, tz)
     if (span?.date !== date) continue
     // The master's own calendar entries read as taken, same as a client booking
